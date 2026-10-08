@@ -350,7 +350,7 @@ static void test_effort_persists_after_reconfiguration(void)
 static void test_effort_argument_applies_without_picker(void)
 {
     reset();
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
+    t_env_set("XDG_STATE_HOME", t_tempdir());
     struct agent_state *state = fresh_state();
     struct agent_session session = {.model = "model", .effort = "low"};
     struct provider provider = {.name = "test", .list_efforts = test_list_efforts};
@@ -375,13 +375,13 @@ static void test_effort_argument_applies_without_picker(void)
     EXPECT(g_picker_calls == 0);
 
     config_free();
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_effort_default_clears_without_levels(void)
 {
     reset();
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
+    t_env_set("XDG_STATE_HOME", t_tempdir());
     struct agent_state *state = fresh_state();
     struct agent_session session = {.model = "plain"};
     struct provider provider = {.name = "test"};
@@ -398,7 +398,7 @@ static void test_effort_default_clears_without_levels(void)
     EXPECT(config_str("effort") == NULL);
 
     config_free();
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_effort_choices_follow_live_model(void)
@@ -508,7 +508,7 @@ static int probe_low_only(struct provider *provider, const char *model, struct m
 static void test_effort_argument_waits_for_model_probe(void)
 {
     reset();
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
+    t_env_set("XDG_STATE_HOME", t_tempdir());
     struct loopback server = {.delay_ms = 300};
     loopback_reply_ok(&server, 0, "{}");
     g_probe_port = loopback_start(&server);
@@ -535,13 +535,13 @@ static void test_effort_argument_waits_for_model_probe(void)
     loopback_stop(&server);
     free(session.model);
     config_free();
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_model_argument_carries_requested_effort(void)
 {
     reset();
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
+    t_env_set("XDG_STATE_HOME", t_tempdir());
     struct agent_state *state = fresh_state();
     struct agent_session session = {.model = "old", .effort = "high"};
     struct provider provider = {
@@ -570,13 +570,13 @@ static void test_model_argument_carries_requested_effort(void)
 
     model_meta_release(&provider);
     config_free();
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_provider_argument_switches_without_picker(void)
 {
     reset();
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
+    t_env_set("XDG_STATE_HOME", t_tempdir());
     struct agent_state *state = fresh_state();
     struct agent_session session = {.model = "model", .effort = "low"};
     struct provider live = {.name = "test", .id = "test"};
@@ -606,7 +606,7 @@ static void test_provider_argument_switches_without_picker(void)
         g_applied_provider->destroy(g_applied_provider);
 
     /* A provider without a default model still switches; /model chooses one afterwards. */
-    setenv("DEEPSEEK_API_KEY", "test-key", 1);
+    t_env_set("DEEPSEEK_API_KEY", "test-key");
     g_applied_provider = NULL;
     select_provider(state, "deepseek");
     EXPECT(g_apply_calls == 2);
@@ -614,16 +614,16 @@ static void test_provider_argument_switches_without_picker(void)
     EXPECT(config_str("model") == NULL);
     if (g_applied_provider)
         g_applied_provider->destroy(g_applied_provider);
-    unsetenv("DEEPSEEK_API_KEY");
+    t_env_unset("DEEPSEEK_API_KEY");
 
     config_free();
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_provider_argument_keeps_discovered_model(void)
 {
     reset();
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
+    t_env_set("XDG_STATE_HOME", t_tempdir());
     const char *models = "{\"data\": [{\"id\": \"served.gguf\"}]}";
     struct loopback server = {.n_requests = 2}; /* availability, then discovery */
     loopback_reply_ok(&server, 0, models);
@@ -659,7 +659,7 @@ static void test_provider_argument_keeps_discovered_model(void)
     EXPECT(config_str("model") == NULL);
 
     config_free();
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 /* Resuming a session recorded under a former provider id with an otherwise unchanged
@@ -685,7 +685,7 @@ static void test_restore_session_former_id_fast_path(void)
 static void test_restore_session_reconstructs_or_keeps_live(void)
 {
     reset();
-    setenv("DEEPSEEK_API_KEY", "test-key", 1);
+    t_env_set("DEEPSEEK_API_KEY", "test-key");
     struct agent_state *state = fresh_state();
     struct provider live = {.name = "test", .id = "test"};
     struct agent_session session = {.model = "m"};
@@ -706,15 +706,15 @@ static void test_restore_session_reconstructs_or_keeps_live(void)
     if (g_applied_provider && g_applied_provider != &live)
         g_applied_provider->destroy(g_applied_provider);
 
-    unsetenv("DEEPSEEK_API_KEY");
+    t_env_unset("DEEPSEEK_API_KEY");
     config_free();
 }
 
 static void test_preset_applies_whole_selection(void)
 {
     reset();
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
-    setenv("DEEPSEEK_API_KEY", "test-key", 1);
+    t_env_set("XDG_STATE_HOME", t_tempdir());
+    t_env_set("DEEPSEEK_API_KEY", "test-key");
     EXPECT(config_load("{\"presets\": {\"sol\": {\"provider\": \"mock\"},"
                        "\"bare\": {\"provider\": \"deepseek\"}}}") == 0);
     struct agent_state *state = fresh_state();
@@ -742,9 +742,9 @@ static void test_preset_applies_whole_selection(void)
     if (g_applied_provider && g_applied_provider != &live)
         g_applied_provider->destroy(g_applied_provider);
 
-    unsetenv("DEEPSEEK_API_KEY");
+    t_env_unset("DEEPSEEK_API_KEY");
     config_free();
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 int main(void)

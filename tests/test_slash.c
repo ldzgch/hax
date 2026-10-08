@@ -1003,8 +1003,8 @@ int main(void)
 {
     /* Row-layout and row-presence assertions depend on these; the variables leak in from any
      * hax parent or user environment. */
-    unsetenv("HAX_DISPLAY_WIDTH");
-    unsetenv("HAX_CONTEXT_LIMIT");
+    t_env_unset("HAX_DISPLAY_WIDTH");
+    t_env_unset("HAX_CONTEXT_LIMIT");
     slash_completer_init(&slash_completer, &completion_state);
     t_env_unset("HAX_DISPLAY_WIDTH");
     t_env_unset("HAX_CONTEXT_LIMIT");

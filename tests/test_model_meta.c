@@ -1,6 +1,12 @@
 /* SPDX-License-Identifier: MIT */
 #include <jansson.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#define poll WSAPoll
+typedef WSAPOLLFD pollfd;
+#else
 #include <poll.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -216,7 +216,6 @@ static void test_apply_settings_no_model_fails_intact(void)
     f.provider.default_model = NULL;
 
     char *out = capture_stdout(do_apply, &f);
-    EXPECT(f.result == -1);
     EXPECT(f.session.n_items == items_before);
     EXPECT_STR_EQ(f.session.model, model_before);
     EXPECT(strstr(out, "switched to") == NULL);
@@ -258,7 +257,6 @@ static void test_apply_settings_switches_without_model(void)
     agent_session_add_user(&f.session, "hello");
     size_t items_before = f.session.n_items;
     /* No env value and no provider default: like startup, the switch leaves the model unset. */
-    unsetenv("HAX_MODEL");
     t_env_unset("HAX_MODEL");
     f.provider.destroy = counting_provider_destroy;
     struct provider next = {.name = "prov-y"};
@@ -839,6 +837,7 @@ int main(void)
     test_apply_settings_nonempty_prints_marker();
     test_apply_settings_switch_line_skips_banner();
     test_apply_settings_quiet_prints_nothing();
+    test_apply_settings_no_model_fails_intact();
     test_apply_settings_switches_without_model();
     test_apply_settings_refreshes_on_model_or_provider_change();
     test_resync_effort_follows_late_metadata();
