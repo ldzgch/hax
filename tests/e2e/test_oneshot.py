@@ -5,6 +5,7 @@ interrupted run."""
 import json
 import os
 import signal
+import subprocess
 import time
 
 import harness
@@ -33,6 +34,44 @@ def test_text_and_banner():
     _, separator, session_id = banner.rpartition(" · session ")
     harness.expect(
         bool(separator and session_id.strip()), "start banner names the session id", result
+    )
+
+
+def test_unicode_cli_prompt():
+    prompt = "explain \u00e9\u754c\U0001f600"
+    result = harness.run_oneshot(
+        prompt, "text Unicode reply \u00e9\u754c\U0001f600\nend-turn\n", extra_args=["--json"]
+    )
+    harness.expect(result.returncode == 0, "Unicode CLI prompt exits 0", result)
+    records = [json.loads(line) for line in result.stdout.splitlines()]
+    harness.expect(
+        any(record.get("kind") == "user" and record.get("text") == prompt for record in records),
+        "CLI arguments reach the model as UTF-8",
+        result,
+    )
+    harness.expect(
+        records[-1].get("text") == "Unicode reply \u00e9\u754c\U0001f600",
+        "redirected stdout retains UTF-8",
+        result,
+    )
+
+
+def test_piped_prompt_preserves_bytes():
+    home, workdir = harness.make_home()
+    prompt = "first\r\n\u00e9\u754c\U0001f600\x1aend"
+    proc = subprocess.run(
+        [str(harness.hax_binary()), "-p", "--json"],
+        cwd=workdir,
+        env=harness.mock_env(home, "text Piped input received\nend-turn\n"),
+        input=prompt.encode("utf-8"),
+        capture_output=True,
+        timeout=30,
+    )
+    harness.expect(proc.returncode == 0, "piped prompt exits 0")
+    records = [json.loads(line) for line in proc.stdout.splitlines()]
+    harness.expect(
+        any(record.get("kind") == "user" and record.get("text") == prompt for record in records),
+        "piped stdin preserves UTF-8, interior CRLF, and Ctrl-Z",
     )
 
 

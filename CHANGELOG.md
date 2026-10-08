@@ -9,6 +9,11 @@ notes (see [docs/releasing.md](docs/releasing.md)).
 
 ### Added
 
+- Native Windows build and test instructions and CI coverage, including REPL pseudoconsole tests.
+- A shared Python build runner for Linux, macOS, BSD, and Windows: `scripts/check.py` provides
+  build, test, lint, install, and build-directory presets without requiring a Unix shell or Make.
+  Existing Make and shell entry points remain available.
+
 - Windows filesystem operations now use extended-length paths for drive and UNC paths, including
   deep project paths, without changing the path spelling passed to Git Bash.
 
@@ -118,6 +123,13 @@ notes (see [docs/releasing.md](docs/releasing.md)).
   and `blame`, including behind global options such as `-C`.
 
 ### Fixed
+
+- Native Windows CLI arguments and redirected streams retain UTF-8 and binary-safe bytes.
+- Unicode Windows catalog cache paths no longer trigger unnecessary refreshes that overwrite a
+  fresh snapshot; modification times retain dates beyond 2038.
+- Mock-provider scripts support Unicode filenames and working-directory expansion on Windows.
+- Windows dependency setup retains compiler path spellings across native and Git Bash shells,
+  avoiding CMake cache resets that discard required build options.
 
 - Native Windows temporary files work when the system temp directory has a trailing separator.
 - Windows @file completion recognizes drive-rooted and UNC path queries.

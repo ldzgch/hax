@@ -28,9 +28,9 @@ Do not submit first-pass agent output. Before opening a pull request:
 - run agents from the repository root so they read `AGENTS.md`;
 - keep the change to the smallest coherent scope;
 - cover new behavior with a test, or say why none applies;
-- run `make tests` and `make lint`;
-- run `BUILD_DIR=build-asan make tests` when the change touches allocation or object lifetimes, and
-  `build-tsan` when it touches threads;
+- run `python3 scripts/check.py test` and `python3 scripts/check.py lint` (`python` on Windows);
+- run `python3 scripts/check.py test --build-dir build-asan` when the change touches allocation or
+  object lifetimes, and `build-tsan` when it touches threads, where the toolchain supports them;
 - manually verify user-visible behavior where applicable;
 - have a fresh model independently review the issue and the completed change, preferably from a
   different model family; and

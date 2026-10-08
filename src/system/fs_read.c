@@ -2,13 +2,16 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/stat.h>
 
 #include "system/fs.h"
 #ifdef _WIN32
+#include <windows.h>
 #include <io.h>
+
+#include "system/win_error.h"
 #else
 #include <unistd.h>
-#include <sys/stat.h>
 #endif
 
 #include "buf.h"
@@ -38,6 +41,36 @@ int fs_file_size(const char *path, uint64_t *size)
     }
     *size = (uint64_t)length;
     return 0;
+}
+
+int fs_file_mtime(const char *path, int64_t *seconds)
+{
+    int fd = fs_open_regular(path);
+    if (fd < 0)
+        return -1;
+#ifdef _WIN32
+    /* MSVCRT's descriptor stat can truncate dates beyond 2038 even through _fstat64. */
+    FILETIME modified;
+    int result = GetFileTime((HANDLE)_get_osfhandle(fd), NULL, NULL, &modified) ? 0 : -1;
+    if (result < 0)
+        win_error_set_errno(GetLastError());
+    int saved_errno = errno;
+    _close(fd);
+    if (result == 0) {
+        uint64_t ticks = ((uint64_t)modified.dwHighDateTime << 32) | modified.dwLowDateTime;
+        *seconds = (int64_t)(ticks / 10000000) - INT64_C(11644473600);
+    }
+#else
+    struct stat info;
+    int result = fstat(fd, &info);
+    int saved_errno = errno;
+    close(fd);
+    if (result == 0)
+        *seconds = (int64_t)info.st_mtime;
+#endif
+    if (result < 0)
+        errno = saved_errno;
+    return result;
 }
 
 static ptrdiff_t read_retry(int fd, void *data, size_t length)

@@ -3,11 +3,11 @@
 
 #include <jansson.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <time.h>
-#include <sys/stat.h>
 
 #include "config.h"
 #include "effort.h"
@@ -705,9 +705,9 @@ void catalog_prefetch(void)
     if (!path)
         return;
 
-    struct stat status;
-    if (stat(path, &status) == 0) {
-        long snapshot_age_s = (long)(time(NULL) - status.st_mtime);
+    int64_t modified;
+    if (fs_file_mtime(path, &modified) == 0) {
+        long snapshot_age_s = (long)((int64_t)time(NULL) - modified);
         if (snapshot_age_s < refresh_ms / 1000) {
             free(path);
             return;

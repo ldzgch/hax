@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Each fetch scenario runs in a child because catalog_prefetch is process-wide and runs once. */
-#include <errno.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +16,7 @@
 #include "process.h"
 #include "provider.h"
 #include "system/clock.h"
+#include "system/fs.h"
 #include "system/socket.h"
 
 /* Parent-made temp root; children carve their own XDG_CACHE_HOME under it. */
@@ -42,11 +43,7 @@ static void write_snapshot(const char *json)
     snprintf(path, sizeof(path), "%s/hax", getenv("XDG_CACHE_HOME"));
     t_mkdir(path, 0755);
     snprintf(path, sizeof(path), "%s/hax/catalog.json", getenv("XDG_CACHE_HOME"));
-    FILE *f = fopen(path, "w");
-    if (!f)
-        FAIL("fopen %s: %s", path, strerror(errno));
-    fputs(json, f);
-    fclose(f);
+    EXPECT(fs_write_atomic(path, json, strlen(json), 0) == 0);
 }
 
 static void backdate_snapshot_days(long days)
@@ -349,12 +346,33 @@ static void scenario_refresh_clears_stale_warning(void)
     catalog_shutdown();
 }
 
+static void scenario_fresh_unicode_snapshot(void)
+{
+    struct loopback server = {0};
+    int port = loopback_listen(&server);
+    EXPECT(port > 0);
+    child_env("fresh-\xc3\xa9", port);
+    t_env_set("HAX_CATALOG_REFRESH", "24h");
+    write_snapshot("{\"openai\": {\"models\": {\"fresh\": {\"cost\": {\"input\": 2}}}}}");
+
+    catalog_prefetch();
+    catalog_drain(1000);
+    uint32_t ready;
+    EXPECT(socket_wait_readable(&server.listener_fd, 1, 0, &ready) == 0);
+    struct catalog_entry entry;
+    EXPECT(catalog_lookup(NULL, "openai", "fresh", &entry) == 0);
+    EXPECT(entry.cost_input == 2);
+    loopback_stop(&server);
+    catalog_shutdown();
+}
+
 struct scenario {
     const char *name;
     void (*run)(void);
 };
 
 static const struct scenario SCENARIOS[] = {
+    {"fresh-unicode-snapshot", scenario_fresh_unicode_snapshot},
     {"cold-start", scenario_cold_start},
     {"refresh-invalidates-memo", scenario_refresh_invalidates_memo},
     {"garbage-keeps-snapshot", scenario_garbage_keeps_snapshot},

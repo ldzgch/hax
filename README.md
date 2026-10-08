@@ -39,8 +39,8 @@ like this.
 
 ## Install
 
-hax runs on Linux, macOS, FreeBSD, and OpenBSD; on Windows, use it under
-[WSL](https://learn.microsoft.com/en-us/windows/wsl/). The BSDs build from source only.
+hax runs on Linux, macOS, FreeBSD, OpenBSD, and native Windows 10 (1809+) / Windows 11.
+The BSDs and Windows build from source; WSL is also supported.
 
 With [Homebrew](https://brew.sh) (macOS or Linux):
 
@@ -56,27 +56,52 @@ then unpack the `hax` binary into any directory on your `PATH`.
 
 ### From source
 
-Building from source gives a binary linked against your system's shared libraries instead of
-a static one:
+The build and test commands are the same in POSIX shells, PowerShell, and cmd. Use Python 3.10+
+(`python3` below; on Windows, use `python`):
 
 ```sh
 git clone https://github.com/OleksandrChekhovskyi/hax.git
 cd hax
-scripts/install_deps.sh   # Debian/Ubuntu, Fedora, Arch, openSUSE, Alpine, macOS, FreeBSD, OpenBSD
-make                      # the binary is now at ./build/hax
-make install              # optional; may prompt for sudo
+python3 scripts/install_deps.py
+python3 scripts/check.py build
+python3 scripts/check.py test
+python3 scripts/check.py install   # optional; uses Meson's install prefix
 ```
 
-`scripts/install_deps.sh` installs the build dependencies — a C compiler, `libcurl`,
-`jansson`, `meson`, `ninja`, and `pkg-config` — plus `fzf`, which hax uses for `@file`
-completion when available. On other platforms, install those packages by hand and run `make`.
+On Unix, the dependency installer uses the system package manager for a C compiler, `libcurl`,
+`jansson`, Meson, Ninja, and `pkg-config`, plus optional `fzf` for `@file` completion. It supports
+Debian/Ubuntu, Fedora, Arch, openSUSE, Alpine, macOS, FreeBSD, and OpenBSD. Source builds link
+against system libraries. `python3 scripts/install_deps.py tests` also installs `tmux` for the
+interactive tests; `lint` installs LLVM where supported.
 
-For hacking on hax, `make symlink` links the freshly built binary into `~/.local/bin` so it
-stays on `PATH` across rebuilds. `make tests` additionally needs `tmux`, which drives the
-interactive scenarios (`scripts/install_deps.sh tests` installs it), and `make lint` needs
-`clang-format` and `clang-tidy` (`scripts/install_deps.sh lint` installs them).
+On Windows, first install [Git for Windows](https://git-scm.com/download/win), native Python,
+Meson (`python -m pip install meson`), CMake 3.24+, Ninja, and a **MinGW-w64 GCC toolchain with POSIX
+threads**. Put `gcc`, `cmake`, and `ninja` on `PATH` in the shell you build from; MSVC is not
+supported. For example, MSYS2's UCRT64 toolchain supplies these with
+`pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja`;
+then add `C:\msys64\ucrt64\bin` to your native shell's `PATH`. Use native Python, not MSYS Python.
+The dependency installer downloads checksum-verified libcurl/Jansson sources and builds them under
+`build-windows-deps/`; the build runner finds this prefix automatically. Windows builds use static
+libraries and Windows TLS/certificate roots, and tests use a native pseudoconsole instead of tmux.
+Run `build/hax.exe` from Windows Terminal; Bash tools use Git Bash, not WSL or PowerShell.
 
-The examples below use `hax` as if it is on `PATH`; after a plain build, use `./build/hax`.
+On Unix, `make`, `make tests`, `make lint`, and `make install` remain shortcuts for the shared
+runner. `make symlink` links the development binary into `~/.local/bin`. For selected tests or
+another build preset on any platform:
+
+```sh
+python3 scripts/check.py test tools/read tools/write
+python3 scripts/check.py build --build-dir build-release
+python3 scripts/check.py test --build-dir build-asan
+python3 scripts/check.py lint
+```
+
+Sanitizer presets require compiler/runtime support (the documented MinGW build does not supply
+ASan/TSan). Lint requires `clang-format`, `clang-tidy`, and `run-clang-tidy` on `PATH`; the Windows
+lint gate currently reports MinGW header-attribution and Windows-specific findings and is not clean.
+
+The examples below use `hax` as if it is on `PATH`; after a plain build, use `./build/hax`
+(`./build/hax.exe` on Windows).
 
 ## Connect a provider
 

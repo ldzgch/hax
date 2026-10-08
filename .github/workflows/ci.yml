@@ -67,6 +67,33 @@ jobs:
         if: ${{ matrix.lint }}
         run: make lint
 
+  windows:
+    name: windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          location: C:\msys64
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+      - name: Prepare native tools
+        shell: pwsh
+        run: |
+          "C:\msys64\ucrt64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          python -m pip install meson
+      - name: Install dependencies
+        run: python scripts/install_deps.py ci
+      - name: Build and test
+        run: python scripts/check.py test
+
   # GitHub has no BSD runners, so these boot a QEMU guest on a Linux runner and
   # take longer than the container jobs above. They cannot join that matrix: the
   # whole body has to run inside the VM, which the `cpa.sh` shell arranges.

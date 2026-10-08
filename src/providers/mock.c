@@ -2,7 +2,6 @@
 #include "providers/mock.h"
 
 #include <errno.h>
-#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +15,8 @@
 #include "provider.h"
 #include "xalloc.h"
 #include "providers/registry.h"
+#include "system/fs.h"
+#include "system/path.h"
 #include "system/rand.h"
 #include "transport/http.h"
 
@@ -159,8 +160,8 @@ static char *expand_cwd(const char *text)
     if (!strstr(text, token))
         return xstrdup(text);
 
-    char cwd[PATH_MAX];
-    if (!getcwd(cwd, sizeof(cwd)))
+    char *cwd = path_cwd();
+    if (!cwd)
         return xstrdup(text);
 
     struct buf expanded;
@@ -174,6 +175,7 @@ static char *expand_cwd(const char *text)
             cursor++;
         }
     }
+    free(cwd);
     return buf_steal(&expanded);
 }
 
@@ -586,7 +588,13 @@ static int mock_stream(struct provider *provider, const struct context *context,
     if (!mock->script_path)
         return interactive_response(context, callback, callback_user, tick, tick_user);
 
-    FILE *script = fopen(mock->script_path, "r");
+    int fd = fs_open_regular(mock->script_path);
+    FILE *script = fd < 0 ? NULL : fdopen(fd, "rb");
+    if (!script && fd >= 0) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+    }
     if (!script) {
         char *message = xasprintf("mock: cannot open '%s': %s", mock->script_path, strerror(errno));
         struct stream_event event = {.kind = EV_ERROR,

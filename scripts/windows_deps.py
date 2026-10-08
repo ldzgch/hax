@@ -88,6 +88,7 @@ def main() -> None:
     if os.name != "nt":
         parser.error("this dependency setup is for native Windows")
     tools = {name: shutil.which(name) for name in ("gcc", "cmake", "ninja")}
+    tools = {name: str(Path(path).resolve()) if path else None for name, path in tools.items()}
     if not args.download_only and not all(tools.values()):
         parser.error("gcc, cmake, and ninja must be on PATH")
     for name, url, digest, options in PACKAGES:
@@ -95,12 +96,24 @@ def main() -> None:
         if args.download_only:
             continue
         build = DEPS / "build" / name
+        compiler = tools["gcc"]
+        fresh = []
+        cache = build / "CMakeCache.txt"
+        if cache.is_file():
+            for line in cache.read_text(encoding="utf-8").splitlines():
+                if line.startswith("CMAKE_C_COMPILER:"):
+                    cached = line.partition("=")[2]
+                    if Path(cached).is_file() and os.path.samefile(cached, compiler):
+                        # CMake compares spellings and resets all options on a compiler change.
+                        compiler = cached
+                    else:
+                        fresh = ["--fresh"]
         subprocess.run(
             [
-                tools["cmake"], "-S", str(directory), "-B", str(build), "-G", "Ninja",
+                tools["cmake"], *fresh, "-S", str(directory), "-B", str(build), "-G", "Ninja",
                 "-DCMAKE_BUILD_TYPE=Release",
                 "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
-                "-DCMAKE_C_COMPILER=" + tools["gcc"],
+                "-DCMAKE_C_COMPILER=" + compiler,
                 "-DCMAKE_MAKE_PROGRAM=" + tools["ninja"],
                 "-DCMAKE_C_COMPILER_LAUNCHER=",
                 "-DCMAKE_INSTALL_PREFIX=" + str(DEPS / "prefix"),

@@ -7,16 +7,16 @@ BUILD_DIR ?= build
 .PHONY: all tests lint install symlink clean
 
 all:
-	@BUILD_DIR=$(BUILD_DIR) scripts/check.sh build
+	@scripts/check.sh build --build-dir "$(BUILD_DIR)"
 
 tests:
-	@BUILD_DIR=$(BUILD_DIR) scripts/check.sh test
+	@scripts/check.sh test --build-dir "$(BUILD_DIR)"
 
 lint:
-	@scripts/check.sh lint
+	@scripts/check.sh lint --build-dir "$(BUILD_DIR)"
 
-install: all
-	meson install -C $(BUILD_DIR)
+install:
+	@scripts/check.sh install --build-dir "$(BUILD_DIR)"
 
 # hax resolves subagent `hax` invocations through PATH, so development is nicest
 # with the dev binary linked there; the symlink tracks every rebuild.

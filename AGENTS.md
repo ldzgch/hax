@@ -7,13 +7,16 @@ headers.
 ## Build, test, lint
 
 ```sh
-make                                      # build (quiet; sets up build/ on first run)
-make tests                                # build + all tests (unit + e2e)
-make lint                                 # clang-format + style script + clang-tidy
-scripts/check.sh test <name>...           # build + selected tests (one or more names)
+python3 scripts/check.py build            # quiet; sets up build/ on first run
+python3 scripts/check.py test             # build + all tests (unit + e2e)
+python3 scripts/check.py lint             # clang-format + style script + clang-tidy
+python3 scripts/check.py test <name>...   # build + selected tests
 ```
 
-`Makefile` delegates to `scripts/check.sh`, which drops routine runner progress but relays
+Use `python` on Windows. `make`, `make tests`, `make lint`, and `scripts/check.sh` remain Unix
+shortcuts. See README.md for native Windows toolchain prerequisites.
+
+The shared `scripts/check.py` runner drops routine runner progress but relays
 compiler and test diagnostics whether or not the phase succeeds, so a clean run is just a
 compact confirmation — prefer these over raw meson invocations to keep output small. The
 verbose equivalents (`meson compile -C build`, `meson test -C build --print-errorlogs`)
@@ -24,8 +27,9 @@ in `scripts/lint_style.py`, and clang-tidy. Failures say what to fix; the conven
 enforce are documented where they live (`.clang-format`, `.clang-tidy`, the script's
 docstring). Run `clang-format -i` on any C source/header you touch before reporting done.
 
-`BUILD_DIR` selects the build directory; these presets are set up on first use. Any other
-name needs `meson setup <dir> <options>` first.
+`--build-dir` (or `BUILD_DIR`) selects the build directory; these presets are set up on first use.
+Any other name needs `meson setup <dir> <options>` first. Sanitizers require compiler/runtime
+support and are unavailable in the documented MinGW toolchain.
 
 | `BUILD_DIR` | Meson options | For |
 | --- | --- | --- |
@@ -35,9 +39,9 @@ name needs `meson setup <dir> <options>` first.
 | `build-release` | `--buildtype=release` | extra inlining warnings; run before a release |
 
 ```sh
-BUILD_DIR=build-asan make tests
-BUILD_DIR=build-tsan scripts/check.sh test <name>
-BUILD_DIR=build-release make
+python3 scripts/check.py test --build-dir build-asan
+python3 scripts/check.py test --build-dir build-tsan <name>
+python3 scripts/check.py build --build-dir build-release
 ```
 
 ## Manual checks and debugging

@@ -19,8 +19,8 @@
 #include <winnt.h>
 #else
 #include <dirent.h>
-#include <sys/stat.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #endif
 
 #include "xalloc.h"

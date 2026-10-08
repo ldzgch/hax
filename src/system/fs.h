@@ -71,6 +71,10 @@ int fs_open_regular(const char *path);
  * Return -1 with errno, including EINVAL for pipes and EISDIR for directories. */
 int fs_file_size(const char *path, uint64_t *size);
 
+/* Report a regular file's modification time in Unix seconds; preserve seconds on failure.
+ * Return -1 with errno, including EINVAL for pipes and EISDIR for directories. */
+int fs_file_mtime(const char *path, int64_t *seconds);
+
 /* Open a binary read/write file, creating it with private permissions when absent. Existing files
  * retain their permissions and contents. With exclusive, require a new file. The caller owns the
  * non-inheritable descriptor. Returns -1 with errno set on failure. */

@@ -11,6 +11,7 @@
 #include "provider.h"
 #include "xalloc.h"
 #include "providers/registry.h"
+#include "system/fs.h"
 
 struct stream_capture {
     struct buf text;
@@ -77,13 +78,8 @@ static int capture_cb(const struct stream_event *ev, void *user)
 
 static char *write_script(const char *content)
 {
-    char *path = xasprintf("%s/script.txt", t_tempdir());
-    FILE *script = fopen(path, "w");
-    if (!script)
-        abort();
-    int write_failed = fputs(content, script) == EOF;
-    int close_failed = fclose(script) == EOF;
-    if (write_failed || close_failed)
+    char *path = xasprintf("%s/script-\xc3\xa9.txt", t_tempdir());
+    if (fs_write_atomic(path, content, strlen(content), 0) < 0)
         abort();
     return path;
 }

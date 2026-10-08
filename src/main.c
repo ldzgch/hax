@@ -4,6 +4,15 @@
 #include <string.h>
 #include <unistd.h>
 #include <curl/curl.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#include <shellapi.h>
+
+#include "xalloc.h"
+#include "system/win_utf8.h"
+#endif
 
 #include "agent.h"
 #include "catalog.h"
@@ -164,7 +173,7 @@ static void initialize_run_services(const char *resume_path)
     session_prune_start(resume_path);
 }
 
-int main(int argc, char **argv)
+static int run(int argc, char **argv)
 {
     initialize_config();
 
@@ -237,4 +246,34 @@ cleanup_config:
     free(prompt);
     free(resume_path);
     return result;
+}
+
+int main(int argc, char **argv)
+{
+#ifdef _WIN32
+    /* The CRT's narrow argv uses the system code page, not UTF-8. */
+    wchar_t **wide = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!wide)
+        return 1;
+    char **utf8 = xcalloc((size_t)argc + 1, sizeof(*utf8));
+    int result = 1;
+    for (int i = 0; i < argc; i++) {
+        utf8[i] = win_utf8_from_wide(wide[i]);
+        if (!utf8[i])
+            goto cleanup;
+    }
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
+    result = run(argc, utf8);
+cleanup:
+    for (int i = 0; i < argc; i++)
+        free(utf8[i]);
+    free(utf8);
+    LocalFree(wide);
+    (void)argv;
+    return result;
+#else
+    return run(argc, argv);
+#endif
 }

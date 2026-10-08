@@ -222,7 +222,9 @@ e2e_scenarios = [
     'oneshot',
 ]
 
-python = find_program('python3')
+python = import('python').find_installation()
+test('scripts/check', python, args: [files('scripts/test_check.py')])
+test('scripts/windows_deps', python, args: [files('scripts/test_windows_deps.py')])
 e2e_env = environment({'HAX_BIN': hax_exe.full_path()})
 e2e_dependencies = [hax_exe]
 if host_machine.system() == 'windows'

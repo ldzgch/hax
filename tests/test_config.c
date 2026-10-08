@@ -406,7 +406,10 @@ static void test_persist_selection(void)
 
     /* A failed write leaves the in-memory tier unchanged (see
      * test_persist_failure_rolls_back for the same contract per-key). */
-    t_env_set("XDG_STATE_HOME", "/dev/null/nope");
+    char *blocked = path_join(t_tempdir(), "not-a-directory");
+    EXPECT(fs_write_atomic(blocked, "", 0, 0) == 0);
+    t_env_set("XDG_STATE_HOME", blocked);
+    free(blocked);
     EXPECT(config_persist_selection("other", NULL, NULL) == -1);
     EXPECT_STR_EQ(config_str("provider"), "mock");
 
@@ -579,7 +582,10 @@ static void test_persist_failure_rolls_back(void)
     /* An unwritable XDG path makes the disk write fail; the in-memory
      * tier must keep the old value rather than claim one the disk never
      * saw. */
-    t_env_set("XDG_CONFIG_HOME", "/dev/null/nope");
+    char *blocked = path_join(t_tempdir(), "not-a-directory");
+    EXPECT(fs_write_atomic(blocked, "", 0, 0) == 0);
+    t_env_set("XDG_CONFIG_HOME", blocked);
+    free(blocked);
     EXPECT(config_load("{\"model\": \"keep\"}") == 0);
     EXPECT(config_persist("model", "lost") == -1);
     EXPECT_STR_EQ(config_str("model"), "keep");
