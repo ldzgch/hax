@@ -1,22 +1,22 @@
 /* SPDX-License-Identifier: MIT */
 /* Each fetch scenario runs in a child because catalog_prefetch is process-wide and runs once. */
 #include <errno.h>
-#include <poll.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <sys/time.h>
-#include <sys/wait.h>
 
 #include "catalog.h"
+#include "env.h"
+#include "files.h"
 #include "harness.h"
 #include "loopback.h"
 #include "model_meta.h"
+#include "process.h"
 #include "provider.h"
+#include "system/clock.h"
+#include "system/socket.h"
 
 /* Parent-made temp root; children carve their own XDG_CACHE_HOME under it. */
 static char *g_root;
@@ -29,18 +29,18 @@ static void child_env(const char *name, int port)
 {
     char dir[512], url[64];
     snprintf(dir, sizeof(dir), "%s/%s", g_root, name);
-    mkdir(dir, 0755);
-    setenv("XDG_CACHE_HOME", dir, 1);
+    t_mkdir(dir, 0755);
+    t_env_set("XDG_CACHE_HOME", dir);
     snprintf(url, sizeof(url), "http://127.0.0.1:%d/api.json", port);
-    setenv("HAX_CATALOG_URL", url, 1);
-    setenv("HAX_CATALOG_REFRESH", "1ms", 1);
+    t_env_set("HAX_CATALOG_URL", url);
+    t_env_set("HAX_CATALOG_REFRESH", "1ms");
 }
 
 static void write_snapshot(const char *json)
 {
     char path[600];
     snprintf(path, sizeof(path), "%s/hax", getenv("XDG_CACHE_HOME"));
-    mkdir(path, 0755);
+    t_mkdir(path, 0755);
     snprintf(path, sizeof(path), "%s/hax/catalog.json", getenv("XDG_CACHE_HOME"));
     FILE *f = fopen(path, "w");
     if (!f)
@@ -53,9 +53,7 @@ static void backdate_snapshot_days(long days)
 {
     char path[600];
     snprintf(path, sizeof(path), "%s/hax/catalog.json", getenv("XDG_CACHE_HOME"));
-    struct timeval tv[2] = {{time(NULL) - days * 24 * 60 * 60, 0},
-                            {time(NULL) - days * 24 * 60 * 60, 0}};
-    EXPECT(utimes(path, tv) == 0);
+    EXPECT(t_file_set_mtime(path, (int64_t)time(NULL) - days * 24 * 60 * 60) == 0);
 }
 
 /* Poll the asynchronous refresh for at most three seconds. */
@@ -66,8 +64,7 @@ static int wait_for_rate(const char *provider_id, const char *model, double expe
         if (catalog_lookup(NULL, provider_id, model, &entry) == 0 &&
             entry.cost_input == expected_rate)
             return 1;
-        struct timespec ts = {0, 10 * 1000 * 1000};
-        nanosleep(&ts, NULL);
+        clock_sleep_ms(10);
     }
     return 0;
 }
@@ -140,8 +137,7 @@ static void run_bad_payload_scenario(const char *name, const char *bad_body)
     catalog_prefetch();
     /* catalog_shutdown joins validation after the server has delivered the full response. */
     for (int i = 0; i < 300 && !atomic_load(&server.served); i++) {
-        struct timespec ts = {0, 10 * 1000 * 1000};
-        nanosleep(&ts, NULL);
+        clock_sleep_ms(10);
     }
     EXPECT(atomic_load(&server.served));
     loopback_stop(&server);
@@ -288,8 +284,8 @@ static void scenario_no_identity_never_fetches(void)
     /* Draining returns at once when nothing was fetched and otherwise waits for the fetch, so any
      * request it made has reached the listener by now. */
     catalog_drain(5000);
-    struct pollfd poll_fd = {.fd = server.listener_fd, .events = POLLIN};
-    EXPECT(poll(&poll_fd, 1, 0) == 0);
+    uint32_t ready;
+    EXPECT(socket_wait_readable(&server.listener_fd, 1, 0, &ready) == 0);
     loopback_stop(&server);
     catalog_shutdown();
 }
@@ -314,13 +310,10 @@ static void scenario_wait_honors_cancellation(void)
     child_env("wait-cancel", port);
     EXPECT(loopback_serve(&server) == 0);
 
-    struct timespec before, after;
-    clock_gettime(CLOCK_MONOTONIC, &before);
+    long before = monotonic_ms();
     catalog_prefetch();
     catalog_wait(5000, always_cancel, NULL);
-    clock_gettime(CLOCK_MONOTONIC, &after);
-    long elapsed_ms =
-        (after.tv_sec - before.tv_sec) * 1000 + (after.tv_nsec - before.tv_nsec) / 1000000;
+    long elapsed_ms = monotonic_ms() - before;
     EXPECT(elapsed_ms < 1000);
     loopback_release(&server);
     EXPECT(wait_for_rate("openai", "m7", 7)); /* the fetch itself was not cancelled */
@@ -356,46 +349,55 @@ static void scenario_refresh_clears_stale_warning(void)
     catalog_shutdown();
 }
 
-/* ---------------- parent orchestration ---------------- */
+struct scenario {
+    const char *name;
+    void (*run)(void);
+};
 
-static void run_scenario(const char *name, void (*scenario)(void))
+static const struct scenario SCENARIOS[] = {
+    {"cold-start", scenario_cold_start},
+    {"refresh-invalidates-memo", scenario_refresh_invalidates_memo},
+    {"garbage-keeps-snapshot", scenario_garbage_keeps_snapshot},
+    {"json-error-keeps-snapshot", scenario_json_error_keeps_snapshot},
+    {"truncated-tail-keeps-snapshot", scenario_truncated_tail_keeps_snapshot},
+    {"invalid-member-keeps-snapshot", scenario_invalid_member_keeps_snapshot},
+    {"trailing-garbage-keeps-snapshot", scenario_trailing_garbage_keeps_snapshot},
+    {"drain-completes-fetch", scenario_drain_completes_fetch},
+    {"stale-snapshot-warns", scenario_stale_snapshot_warns},
+    {"wait-catalog-starts-fetch", scenario_wait_catalog_starts_fetch},
+    {"no-identity-never-fetches", scenario_no_identity_never_fetches},
+    {"wait-honors-cancellation", scenario_wait_honors_cancellation},
+    {"refresh-clears-stale-warning", scenario_refresh_clears_stale_warning},
+};
+
+int main(int argc, char **argv)
 {
-    /* The include cleaner knows no direct glibc provider for pid_t here; its typedef hides behind
-     * the ignored bits/ headers. */
-    // NOLINTNEXTLINE(misc-include-cleaner)
-    pid_t pid = fork();
-    if (pid == 0) {
-        /* Count only this scenario's failures, not the ones inherited from earlier scenarios. */
-        t_failures = 0;
-        scenario();
-        _exit(t_failures ? 1 : 0);
+    if (argc == 3) {
+        g_root = argv[2];
+        for (size_t i = 0; i < sizeof(SCENARIOS) / sizeof(*SCENARIOS); i++) {
+            if (strcmp(argv[1], SCENARIOS[i].name) == 0) {
+                SCENARIOS[i].run();
+                T_REPORT();
+            }
+        }
+        return 2;
     }
-    EXPECT(pid > 0);
-    if (pid <= 0)
-        return;
-    int status = 0;
-    waitpid(pid, &status, 0);
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
-        FAIL("scenario '%s' failed in child (status 0x%x)", name, status);
-}
-
-int main(void)
-{
+    char *program = t_program_path(argv[0]);
+    EXPECT(program != NULL);
+    if (!program)
+        T_REPORT();
     g_root = t_tempdir();
-
-    run_scenario("cold-start", scenario_cold_start);
-    run_scenario("refresh-invalidates-memo", scenario_refresh_invalidates_memo);
-    run_scenario("garbage-keeps-snapshot", scenario_garbage_keeps_snapshot);
-    run_scenario("json-error-keeps-snapshot", scenario_json_error_keeps_snapshot);
-    run_scenario("truncated-tail-keeps-snapshot", scenario_truncated_tail_keeps_snapshot);
-    run_scenario("invalid-member-keeps-snapshot", scenario_invalid_member_keeps_snapshot);
-    run_scenario("trailing-garbage-keeps-snapshot", scenario_trailing_garbage_keeps_snapshot);
-    run_scenario("drain-completes-fetch", scenario_drain_completes_fetch);
-    run_scenario("stale-snapshot-warns", scenario_stale_snapshot_warns);
-    run_scenario("wait-catalog-starts-fetch", scenario_wait_catalog_starts_fetch);
-    run_scenario("no-identity-never-fetches", scenario_no_identity_never_fetches);
-    run_scenario("wait-honors-cancellation", scenario_wait_honors_cancellation);
-    run_scenario("refresh-clears-stale-warning", scenario_refresh_clears_stale_warning);
-
+    for (size_t i = 0; i < sizeof(SCENARIOS) / sizeof(*SCENARIOS); i++) {
+        const char *child_argv[] = {program, SCENARIOS[i].name, g_root, NULL};
+        struct t_process *child = t_process_start(child_argv);
+        EXPECT(child != NULL);
+        if (!child)
+            continue;
+        int code = t_process_wait(child, 10000);
+        if (code != 0)
+            FAIL("scenario '%s' failed in child (exit %d)", SCENARIOS[i].name, code);
+        t_process_close(child);
+    }
+    free(program);
     T_REPORT();
 }

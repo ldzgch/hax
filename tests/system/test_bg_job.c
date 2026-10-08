@@ -1,9 +1,22 @@
 /* SPDX-License-Identifier: MIT */
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <sched.h>
+#endif
 #include <stddef.h>
 
 #include "harness.h"
 #include "system/bg_job.h"
+
+static void yield_worker(void)
+{
+#ifdef _WIN32
+    Sleep(0);
+#else
+    sched_yield();
+#endif
+}
 
 static void set_value(struct bg_job *job, void *arg)
 {
@@ -14,14 +27,14 @@ static void set_value(struct bg_job *job, void *arg)
 static void wait_for_cancel(struct bg_job *job, void *arg)
 {
     while (!bg_job_cancel_requested(job))
-        sched_yield();
+        yield_worker();
     *(int *)arg = 1;
 }
 
 static void wait_for_cancel_tick(struct bg_job *job, void *arg)
 {
     while (!bg_job_cancel_tick(job))
-        sched_yield();
+        yield_worker();
     *(int *)arg = 1;
 }
 

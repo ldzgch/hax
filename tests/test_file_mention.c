@@ -2,16 +2,29 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <sys/stat.h>
+#endif
+#ifdef _WIN32
+/* The Windows API headers depend on this umbrella header's target declarations. */
+#include <windows.h> // IWYU pragma: keep
+#include <libloaderapi.h>
+#include <minwindef.h>
+#include <wchar.h>
+#endif
 
+#include "env.h"
 #include "file_mention.h"
 #include "harness.h"
 #include "xalloc.h"
 #include "system/path.h"
 #include "terminal/input_core.h"
 #include "text/shell_quote.h"
+#ifdef _WIN32
+#include "system/win_utf8.h"
+#endif
 
-static void write_file(const char *path, const char *contents, mode_t mode)
+static void write_file(const char *path, const char *contents, unsigned mode)
 {
     FILE *file = fopen(path, "wb");
 
@@ -20,7 +33,11 @@ static void write_file(const char *path, const char *contents, mode_t mode)
         return;
     EXPECT(fputs(contents, file) != EOF);
     EXPECT(fclose(file) == 0);
+#ifndef _WIN32
     EXPECT(chmod(path, mode) == 0);
+#else
+    (void)mode;
+#endif
 }
 
 static void test_command_candidate_sources(void)
@@ -95,6 +112,18 @@ static void test_command_parent_and_absolute_queries(void)
     EXPECT(strstr(command, "--query='x'") != NULL);
     free(command);
 
+#ifdef _WIN32
+    command = file_mention_build_fzf_command("C:\\tmp\\x");
+    EXPECT(strstr(command, "cd 'C:\\tmp\\' 2>/dev/null") != NULL);
+    EXPECT(strstr(command, "--query='x'") != NULL);
+    free(command);
+
+    command = file_mention_build_fzf_command("\\\\server\\share\\x");
+    EXPECT(strstr(command, "cd ") != NULL);
+    EXPECT(strstr(command, "--query='x'") != NULL);
+    free(command);
+#endif
+
     command = file_mention_build_fzf_command("../a b$(x)");
     EXPECT(strstr(command, "cd '../' 2>/dev/null") != NULL);
     EXPECT(strstr(command, "--query='a b$(x)'") != NULL);
@@ -152,17 +181,39 @@ static void test_pick_reads_and_rejoins_nul_record(void)
     static const char FZF_SCRIPT[] = "#!/bin/sh\n"
                                      "printf '%s\\000' \"$HAX_TEST_FZF_SELECTION\"\n";
     char *dir = t_tempdir();
+#ifdef _WIN32
+    char *fzf_path = xasprintf("%s/fzf.exe", dir);
+#else
     char *fzf_path = xasprintf("%s/fzf", dir);
+#endif
+#ifdef _WIN32
+    char *picked_file = xasprintf("%s/picked file.txt", dir);
+    const char *selection = "./picked file.txt";
+#else
     char *picked_file = xasprintf("%s/picked\nfile.txt", dir);
+    const char *selection = "./picked\nfile.txt";
+#endif
     char *query = xasprintf("%s/", dir);
 
+#ifdef _WIN32
+    (void)FZF_SCRIPT;
+    wchar_t *source = xmalloc(32768 * sizeof(*source));
+    DWORD source_length = GetModuleFileNameW(NULL, source, 32768);
+    wchar_t *target = win_utf8_to_wide(fzf_path);
+    EXPECT(source_length > 0 && source_length < 32768 && target != NULL);
+    if (source_length > 0 && source_length < 32768 && target)
+        EXPECT(CopyFileW(source, target, FALSE));
+    free(target);
+    free(source);
+#else
     write_file(fzf_path, FZF_SCRIPT, 0755);
+#endif
     write_file(picked_file, "contents", 0644);
     /* Prepended rather than replacing PATH: the stub still shadows any real fzf, but the system
      * directories stay reachable for the utilities it runs. printf is a builtin in dash and
      * FreeBSD's sh, but not in the ksh that OpenBSD installs as /bin/sh. */
     char *saved_path = t_path_prepend(dir);
-    setenv("HAX_TEST_FZF_SELECTION", "./picked\nfile.txt", 1);
+    t_env_set("HAX_TEST_FZF_SELECTION", selection);
 
     EXPECT(file_mention_available() == 1);
     char *picked = file_mention_pick(query);
@@ -171,7 +222,7 @@ static void test_pick_reads_and_rejoins_nul_record(void)
         EXPECT_STR_EQ(picked, picked_file);
 
     free(picked);
-    unsetenv("HAX_TEST_FZF_SELECTION");
+    t_env_unset("HAX_TEST_FZF_SELECTION");
     t_path_restore(saved_path);
     free(query);
     free(picked_file);
@@ -224,8 +275,25 @@ static void test_completer_rejects_non_mentions(void)
     EXPECT(match_mention("@a", 2, 3, &start, &end) == 0);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+#ifdef _WIN32
+    (void)argc;
+    const char *name = strrchr(argv[0], '\\');
+    if (!name)
+        name = strrchr(argv[0], '/');
+    name = name ? name + 1 : argv[0];
+    if (_stricmp(name, "fzf.exe") == 0) {
+        const char *selection = getenv("HAX_TEST_FZF_SELECTION");
+        if (selection)
+            fwrite(selection, 1, strlen(selection), stdout);
+        fputc('\0', stdout);
+        return fflush(stdout) == 0 ? 0 : 1;
+    }
+#else
+    (void)argc;
+    (void)argv;
+#endif
     test_command_candidate_sources();
     test_command_uses_nul_records();
     test_command_quotes_query();

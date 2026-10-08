@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "buf.h"
+#include "env.h"
 #include "harness.h"
 #include "provider.h"
 #include "xalloc.h"
@@ -89,9 +90,9 @@ static char *write_script(const char *content)
 
 static struct provider *new_scripted_provider(const char *path)
 {
-    setenv("HAX_MOCK_SCRIPT", path, 1);
+    t_env_set("HAX_MOCK_SCRIPT", path);
     struct provider *provider = provider_construct(provider_find("mock"));
-    unsetenv("HAX_MOCK_SCRIPT");
+    t_env_unset("HAX_MOCK_SCRIPT");
     return provider;
 }
 
@@ -273,7 +274,7 @@ static void test_scripted_missing_file(void)
 
 static struct provider *new_interactive_provider(void)
 {
-    unsetenv("HAX_MOCK_SCRIPT");
+    t_env_unset("HAX_MOCK_SCRIPT");
     return provider_construct(provider_find("mock"));
 }
 

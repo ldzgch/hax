@@ -1,22 +1,31 @@
 /* SPDX-License-Identifier: MIT */
 #include "session_prune.h"
 
+#ifndef _WIN32
 #include <dirent.h>
+#endif
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <sys/file.h>
+#ifdef _WIN32
+#include <io.h>
+#endif
 #include <sys/stat.h>
 
 #include "config.h"
-#include "session.h"
+#include "session_paths.h"
+#include "session_storage.h"
 #include "xalloc.h"
 #include "system/bg_job.h"
 #include "system/fd.h"
+#include "system/file_lock.h"
 #include "system/path.h"
+#ifdef _WIN32
+#include "session_prune_win.h"
+#endif
 
 #define SESSION_PRUNE_INTERVAL_S (24 * 60 * 60)
 
@@ -25,6 +34,9 @@ struct prune_args {
     char *exclude_path;
     time_t cutoff;
     int marker_fd;
+#ifdef _WIN32
+    HANDLE anchor;
+#endif
 };
 
 static struct bg_job *active_prune_job;
@@ -44,6 +56,9 @@ time_t session_retention_cutoff(void)
 static int prune_tree(const char *sessions_dir, time_t cutoff, const char *exclude_path,
                       struct bg_job *job)
 {
+#ifdef _WIN32
+    return session_prune_tree_win(sessions_dir, cutoff, exclude_path, job);
+#else
     int sessions_fd = open(sessions_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (sessions_fd < 0)
         return 0;
@@ -111,7 +126,7 @@ static int prune_tree(const char *sessions_dir, time_t cutoff, const char *exclu
              * exclusive lock, verify that the opened inode is still old and
              * is the same candidate observed during enumeration. */
             struct stat locked_stat;
-            if (flock(session_fd, LOCK_EX | LOCK_NB) == 0 && fstat(session_fd, &locked_stat) == 0 &&
+            if (file_lock_fd(session_fd, 1, 1) == 0 && fstat(session_fd, &locked_stat) == 0 &&
                 S_ISREG(locked_stat.st_mode) && locked_stat.st_mtime < cutoff &&
                 locked_stat.st_dev == session_stat.st_dev &&
                 locked_stat.st_ino == session_stat.st_ino)
@@ -125,6 +140,7 @@ static int prune_tree(const char *sessions_dir, time_t cutoff, const char *exclu
     }
     closedir(sessions);
     return 0;
+#endif
 }
 
 int session_prune_before(time_t cutoff, const char *exclude_path)
@@ -143,6 +159,9 @@ static void prune_args_free(struct prune_args *args)
         return;
     free(args->sessions_dir);
     free(args->exclude_path);
+#ifdef _WIN32
+    CloseHandle(args->anchor);
+#endif
     free(args);
 }
 
@@ -152,10 +171,15 @@ static void prune_worker(struct bg_job *job, void *arg)
     if (prune_tree(args->sessions_dir, args->cutoff, args->exclude_path, job) == 0) {
         /* A zero-length marker means no sweep has completed yet. Truncate
          * first so a crash during this update causes an early retry. */
-        if (ftruncate(args->marker_fd, 0) == 0 && lseek(args->marker_fd, 0, SEEK_SET) == 0)
+#ifdef _WIN32
+        int truncated = _chsize_s(args->marker_fd, 0) == 0;
+#else
+        int truncated = ftruncate(args->marker_fd, 0) == 0;
+#endif
+        if (truncated && lseek(args->marker_fd, 0, SEEK_SET) == 0)
             (void)fd_write_all(args->marker_fd, "1", 1);
     }
-    (void)flock(args->marker_fd, LOCK_UN);
+    (void)file_unlock_fd(args->marker_fd);
     close(args->marker_fd);
     prune_args_free(args);
 }
@@ -169,26 +193,34 @@ void session_prune_start(const char *exclude_path)
         return;
 
     char *sessions_dir = xdg_hax_state_path("sessions");
+#ifdef _WIN32
+    HANDLE anchor = sessions_dir ? session_prune_anchor_win(sessions_dir) : INVALID_HANDLE_VALUE;
+    if (anchor == INVALID_HANDLE_VALUE) {
+        free(sessions_dir);
+        return;
+    }
+#else
     struct stat sessions_stat;
     if (!sessions_dir || lstat(sessions_dir, &sessions_stat) != 0 ||
         !S_ISDIR(sessions_stat.st_mode)) {
         free(sessions_dir);
         return;
     }
+#endif
 
     /* The marker lock elects one pruner across processes; its mtime records
      * the last completed sweep. The worker keeps the lock until it finishes,
      * and a zero-length marker means the prior attempt never completed. */
     char *marker_path = xasprintf("%s/.prune", sessions_dir);
-    int marker_fd = open(marker_path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
+    int marker_fd = session_storage_open_marker(marker_path);
     free(marker_path);
-    if (marker_fd < 0 || flock(marker_fd, LOCK_EX | LOCK_NB) != 0) {
-        if (marker_fd >= 0)
-            close(marker_fd);
+    if (marker_fd < 0) {
+#ifdef _WIN32
+        CloseHandle(anchor);
+#endif
         free(sessions_dir);
         return;
     }
-    (void)fchmod(marker_fd, 0600);
 
     struct stat marker_stat;
     time_t now = time(NULL);
@@ -196,8 +228,11 @@ void session_prune_start(const char *exclude_path)
      * every launch repeat the sweep until time catches up. */
     if (fstat(marker_fd, &marker_stat) == 0 && marker_stat.st_size > 0 &&
         (now <= marker_stat.st_mtime || now - marker_stat.st_mtime < SESSION_PRUNE_INTERVAL_S)) {
-        (void)flock(marker_fd, LOCK_UN);
+        (void)file_unlock_fd(marker_fd);
         close(marker_fd);
+#ifdef _WIN32
+        CloseHandle(anchor);
+#endif
         free(sessions_dir);
         return;
     }
@@ -209,9 +244,12 @@ void session_prune_start(const char *exclude_path)
     args->exclude_path = exclude_path ? xstrdup(exclude_path) : NULL;
     args->cutoff = cutoff;
     args->marker_fd = marker_fd;
+#ifdef _WIN32
+    args->anchor = anchor;
+#endif
     active_prune_job = bg_job_spawn(prune_worker, args);
     if (!active_prune_job) {
-        (void)flock(marker_fd, LOCK_UN);
+        (void)file_unlock_fd(marker_fd);
         close(marker_fd);
         prune_args_free(args);
     }

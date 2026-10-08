@@ -12,6 +12,7 @@
 #include "tool_schema.h"
 #include "xalloc.h"
 #include "render/diff_color.h"
+#include "system/fs.h"
 #include "system/locale.h"
 #include "terminal/ansi.h"
 #include "terminal/theme.h"
@@ -562,7 +563,7 @@ void transcript_log_init(void)
         return;
 
     /* The header is written later, once the session configuration is available. */
-    FILE *stream = fopen(path, "we");
+    FILE *stream = fs_fopen_write(path);
     if (stream)
         fclose(stream);
 }
@@ -573,7 +574,7 @@ struct transcript_log *transcript_log_open(const char *system_prompt, const stru
     const char *path = config_str("transcript");
     if (!path || !*path)
         return NULL;
-    FILE *stream = fopen(path, "we");
+    FILE *stream = fs_fopen_write(path);
     if (!stream) {
         hax_warn("HAX_TRANSCRIPT: cannot open '%s' for writing", path);
         return NULL;
@@ -587,6 +588,7 @@ struct transcript_log *transcript_log_open(const char *system_prompt, const stru
     log->items_written = 0;
     log->turn_number = 0;
     transcript_render_header(stream, TRANSCRIPT_RENDER_PLAIN, system_prompt, tools, n_tools);
+    fflush(stream);
     return log;
 }
 
@@ -598,6 +600,7 @@ void transcript_log_append(struct transcript_log *log, const struct item *items,
     transcript_render_items(log->stream, TRANSCRIPT_RENDER_PLAIN, items, n_items,
                             log->items_written, &log->turn_number);
     log->items_written = n_items;
+    fflush(log->stream);
 }
 
 void transcript_log_reset(struct transcript_log *log, const char *system_prompt,
@@ -605,8 +608,9 @@ void transcript_log_reset(struct transcript_log *log, const char *system_prompt,
 {
     if (!log)
         return;
-    /* freopen closes the old stream on failure; a later reset must recover with fopen. */
-    FILE *stream = log->stream ? freopen(log->path, "we", log->stream) : fopen(log->path, "we");
+    if (log->stream)
+        fclose(log->stream);
+    FILE *stream = fs_fopen_write(log->path);
     if (!stream) {
         hax_warn("HAX_TRANSCRIPT: cannot truncate '%s' on /new", log->path);
         log->stream = NULL;
@@ -614,11 +618,12 @@ void transcript_log_reset(struct transcript_log *log, const char *system_prompt,
     }
 
     log->stream = stream;
-    /* Stream buffering does not portably survive freopen. */
+    /* Publish headers and completed turns even when the CRT fully buffers streams. */
     setvbuf(stream, NULL, _IOLBF, 0);
     log->items_written = 0;
     log->turn_number = 0;
     transcript_render_header(stream, TRANSCRIPT_RENDER_PLAIN, system_prompt, tools, n_tools);
+    fflush(stream);
 }
 
 void transcript_log_close(struct transcript_log *log)

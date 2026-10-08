@@ -28,7 +28,8 @@ size_t utf8_prev(const char *bytes, size_t offset);
 /* Measure the codepoint at offset and write its byte length to codepoint_len. Returns zero at the
  * end, a positive terminal-cell width for printable codepoints, and -1 for malformed input,
  * controls, or format characters that could hide or rearrange terminal content. Tab and newline
- * have no special handling. Requires a UTF-8 LC_CTYPE locale for non-ASCII input. */
+ * have no special handling. Requires a UTF-8 LC_CTYPE locale for non-ASCII input on POSIX;
+ * native Windows uses locale-independent Unicode tables. */
 int utf8_codepoint_cells(const char *bytes, size_t length, size_t offset, size_t *codepoint_len);
 
 /* Incremental codepoint assembly for cell accounting. Zero-initialize or reset before use. */

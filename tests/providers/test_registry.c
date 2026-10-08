@@ -5,6 +5,7 @@
 
 #include "config.h"
 #include "diag.h"
+#include "env.h"
 #include "harness.h"
 #include "provider.h"
 #include "providers/anthropic_models.h"
@@ -50,7 +51,7 @@ static void test_gateway_defs_registered(void)
            idx_of("openrouter")); /* data defs rank after the primary built-ins */
 
     /* The picker names the exact variable to set, like the compiled-in providers. */
-    unsetenv("OPENCODE_API_KEY");
+    t_env_unset("OPENCODE_API_KEY");
     const struct provider_def *zen = provider_find("opencode-zen");
     struct provider_availability availability = {0};
     provider_prepare_availability(zen, &availability);
@@ -106,23 +107,23 @@ static void test_former_id_canonicalized(void)
  * factory default, then the id. Each display-name variable renames only its own provider. */
 static void test_display_name_resolution(void)
 {
-    unsetenv("HAX_OPENAI_DISPLAY_NAME");
+    t_env_unset("HAX_OPENAI_DISPLAY_NAME");
     EXPECT_STR_EQ(provider_display_name(provider_find("llamacpp")), "llama.cpp");
     EXPECT_STR_EQ(provider_display_name(provider_find("openai")), "openai");
     EXPECT_STR_EQ(provider_display_name(provider_find("openai-compatible")), "openai-compatible");
 
-    setenv("HAX_OPENAI_DISPLAY_NAME", "vLLM", 1);
+    t_env_set("HAX_OPENAI_DISPLAY_NAME", "vLLM");
     EXPECT_STR_EQ(provider_display_name(provider_find("openai-compatible")), "vLLM");
     EXPECT_STR_EQ(provider_display_name(provider_find("anthropic-compatible")),
                   "anthropic-compatible");
-    unsetenv("HAX_OPENAI_DISPLAY_NAME");
+    t_env_unset("HAX_OPENAI_DISPLAY_NAME");
 }
 
 /* Capability hooks declared on a def reach the constructed provider — including the /models
  * entry parser the listing applies, not just the vtable hooks. */
 static void test_def_hooks_reach_provider(void)
 {
-    unsetenv("HAX_MODEL");
+    t_env_unset("HAX_MODEL");
     const struct provider_def *def = provider_find("openrouter");
     EXPECT(def != NULL);
     if (!def)
@@ -154,10 +155,10 @@ static void test_def_hooks_reach_provider(void)
  * alter it. */
 static void test_pinned_def_ignores_compat_config(void)
 {
-    setenv("HAX_OPENAI_DISPLAY_NAME", "Renamed", 1);
-    setenv("HAX_OPENAI_API_KEY", "sk-compat", 1);
-    unsetenv("OPENAI_API_KEY");
-    unsetenv("HAX_MODEL");
+    t_env_set("HAX_OPENAI_DISPLAY_NAME", "Renamed");
+    t_env_set("HAX_OPENAI_API_KEY", "sk-compat");
+    t_env_unset("OPENAI_API_KEY");
+    t_env_unset("HAX_MODEL");
 
     const struct provider_def *def = provider_find("openai");
     EXPECT(def != NULL);
@@ -211,8 +212,8 @@ static void test_pinned_def_ignores_compat_config(void)
     }
     config_set_override("providers.openai.display_name", NULL);
 
-    unsetenv("HAX_OPENAI_DISPLAY_NAME");
-    unsetenv("HAX_OPENAI_API_KEY");
+    t_env_unset("HAX_OPENAI_DISPLAY_NAME");
+    t_env_unset("HAX_OPENAI_API_KEY");
 }
 
 /* A local def's "{port}" base_url placeholder expands to the registered port setting: the

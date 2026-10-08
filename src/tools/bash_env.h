@@ -10,7 +10,10 @@
  * dispatch thread. */
 void bash_env_set_selection(const char *provider, const char *model, const char *effort);
 
-/* Return a malloc'd environment vector whose entries remain borrowed. */
+/* Snapshot the native parent environment and apply unattended-tool and selection overrides.
+ * One allocation owns the vector and every string; release with free(vector). Native Windows
+ * reads UTF-16 environment values and returns UTF-8, matching override names case-insensitively.
+ * Return NULL with errno when the snapshot cannot be represented. */
 char **bash_build_child_env(void);
 
 #endif /* HAX_TOOLS_BASH_ENV_H */

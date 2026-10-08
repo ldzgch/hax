@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 
 #include "buf.h"
+#include "files.h"
 #include "harness.h"
 #include "xalloc.h"
 #include "system/fd.h"
@@ -99,7 +100,7 @@ static void test_which_skips_directory_match(void)
     const char *first_dir = t_tempdir();
     const char *second_dir = t_tempdir();
     char *directory_match = path_join(first_dir, "hax-test-tool");
-    EXPECT(mkdir(directory_match, 0755) == 0);
+    EXPECT(t_mkdir(directory_match, 0755) == 0);
     char *executable_path = path_join(second_dir, "hax-test-tool");
     touch_file(executable_path, 0755);
     char *path_env = xasprintf("%s:%s", first_dir, second_dir);
@@ -219,8 +220,8 @@ static void test_resolve_link_target_relative_chain(void)
     char *first_link = path_join(dir, "first");
     char *second_link = path_join(dir, "second");
     char *target_path = path_join(dir, "target");
-    EXPECT(symlink("second", first_link) == 0);
-    EXPECT(symlink("target", second_link) == 0);
+    T_SYMLINK("second", first_link, 0);
+    T_SYMLINK("target", second_link, 0);
 
     char *resolved_path = fs_resolve_link_target(first_link);
     EXPECT_STR_EQ(resolved_path, target_path);
@@ -240,7 +241,7 @@ static void test_resolve_link_target_long_target(void)
     for (int i = 0; i < 30; i++)
         buf_append_str(&target, "missing/../");
     buf_append_str(&target, "target");
-    EXPECT(symlink(target.data, link_path) == 0);
+    T_SYMLINK(target.data, link_path, 0);
 
     char *expected_path = path_join(dir, target.data);
     char *resolved_path = fs_resolve_link_target(link_path);
@@ -257,8 +258,8 @@ static void test_resolve_link_target_loop(void)
     const char *dir = t_tempdir();
     char *first_link = path_join(dir, "first");
     char *second_link = path_join(dir, "second");
-    EXPECT(symlink("second", first_link) == 0);
-    EXPECT(symlink("first", second_link) == 0);
+    T_SYMLINK("second", first_link, 0);
+    T_SYMLINK("first", second_link, 0);
 
     errno = 0;
     char *resolved_path = fs_resolve_link_target(first_link);
@@ -300,8 +301,8 @@ static void test_mkdir_p_accepts_directory_symlink(void)
     char *target_dir = path_join(dir, "target");
     char *link_path = path_join(dir, "link");
     char *nested_path = path_join(link_path, "nested");
-    EXPECT(mkdir(target_dir, 0755) == 0);
-    EXPECT(symlink(target_dir, link_path) == 0);
+    EXPECT(t_mkdir(target_dir, 0755) == 0);
+    T_SYMLINK(target_dir, link_path, 1);
 
     EXPECT(fs_mkdir_p(nested_path) == 0);
     struct stat st;
@@ -412,6 +413,9 @@ static void test_read_file_directory_rejected(void)
 
 static void test_read_file_fifo_rejected_no_hang(void)
 {
+#ifdef _WIN32
+    T_SKIP("Windows has no POSIX FIFO files");
+#else
     /* A blocking read-only open on a writer-less FIFO never returns. */
     char *path = t_tempdir();
     char fifo[64];
@@ -433,6 +437,10 @@ static void test_read_file_fifo_rejected_no_hang(void)
     char *p2 = fs_read_file_capped(fifo, 1024, NULL, &truncated);
     EXPECT(p2 == NULL);
     EXPECT(errno == EINVAL);
+    free(p);
+    free(p2);
+    free(path);
+#endif
 }
 
 static void test_read_file_capped_missing(void)
@@ -539,7 +547,7 @@ static void test_write_atomic_bytes_mode_and_symlink(void)
     char *path = path_join(dir, "nested/file");
     char *link = path_join(dir, "link");
     const char content[] = {'a', '\0', 'b'};
-    EXPECT(symlink("nested/file", link) == 0);
+    T_SYMLINK("nested/file", link, 0);
 
     for (int durable = 0; durable <= 1; durable++) {
         EXPECT(fs_write_atomic(link, content, sizeof(content), durable) == 0);
@@ -550,7 +558,7 @@ static void test_write_atomic_bytes_mode_and_symlink(void)
             EXPECT_MEM_EQ(body, length, content, sizeof(content));
         free(body);
         struct stat st;
-        EXPECT(lstat(link, &st) == 0 && S_ISLNK(st.st_mode));
+        EXPECT(t_file_is_symlink(link));
 
         /* The parent exists before the restrictive umask, so only file creation is tested. */
         mode_t mask = umask(0777);
@@ -567,7 +575,7 @@ static void test_write_atomic_failure_cleanup(void)
 {
     const char *dir = t_tempdir();
     char *path = path_join(dir, "destination");
-    EXPECT(mkdir(path, 0755) == 0);
+    EXPECT(t_mkdir(path, 0755) == 0);
     for (int durable = 0; durable <= 1; durable++) {
         errno = 0;
         EXPECT(fs_write_atomic(path, "new", 3, durable) == -1);

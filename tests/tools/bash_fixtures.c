@@ -1,20 +1,16 @@
 /* SPDX-License-Identifier: MIT */
 #include "tools/bash_fixtures.h"
 
-#include <errno.h>
-#include <fcntl.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#include <unistd.h>
-#include <sys/stat.h>
 
 #include "buf.h"
 #include "harness.h"
 #include "tool.h"
 #include "xalloc.h"
+#include "system/clock.h"
+#include "system/fs.h"
 
 char *call_bash_background(const char *escaped_command)
 {
@@ -54,6 +50,15 @@ char *wait_for_id(const char *id, int timeout_seconds)
     return out;
 }
 
+void expect_task_stopped(const char *result)
+{
+#ifdef _WIN32
+    EXPECT(strstr(result, "finished (exit 1)") != NULL);
+#else
+    EXPECT(strstr(result, "killed (signal ") != NULL);
+#endif
+}
+
 char *kill_id(const char *id)
 {
     char *args = xasprintf("{\"id\":\"%s\",\"kill\":true}", id);
@@ -62,65 +67,22 @@ char *kill_id(const char *id)
     return out;
 }
 
-int process_is_gone(int pid)
-{
-    /* kill(0) and kill(-1) would probe the process group and every process. */
-    if (pid <= 0)
-        return 0;
-    time_t start = time(NULL);
-    while (time(NULL) - start < 10) {
-        /* ESRCH on Linux, EPERM on Darwin. */
-        if (kill(pid, 0) < 0)
-            return 1;
-        struct timespec ts = {.tv_sec = 0, .tv_nsec = 5 * 1000000L};
-        nanosleep(&ts, NULL);
-    }
-    kill(pid, SIGKILL);
-    return 0;
-}
-
 int await_pid_file(const char *path)
 {
-    time_t start = time(NULL);
-    while (time(NULL) - start < 10) {
+    long deadline = monotonic_ms() + 10000;
+    while (monotonic_ms() < deadline) {
         int pid = -1;
-        FILE *f = fopen(path, "r");
-        if (f) {
-            if (fscanf(f, "%d", &pid) != 1)
+        char *contents = fs_read_file(path, NULL);
+        if (contents) {
+            if (sscanf(contents, "%d", &pid) != 1)
                 pid = -1;
-            fclose(f);
+            free(contents);
         }
         if (pid > 0)
             return pid;
-        struct timespec ts = {.tv_sec = 0, .tv_nsec = 5 * 1000000L};
-        nanosleep(&ts, NULL);
+        clock_sleep_ms(5);
     }
     return -1;
-}
-
-char *gate_create(void)
-{
-    char *path = xasprintf("%s/gate", t_tempdir());
-    EXPECT(mkfifo(path, 0600) == 0);
-    return path;
-}
-
-void gate_release(const char *path)
-{
-    int fd = -1;
-    time_t start = time(NULL);
-    while (time(NULL) - start < 10) {
-        fd = open(path, O_WRONLY | O_NONBLOCK);
-        if (fd >= 0 || errno != ENXIO)
-            break;
-        struct timespec ts = {.tv_sec = 0, .tv_nsec = 3 * 1000000L};
-        nanosleep(&ts, NULL);
-    }
-    EXPECT(fd >= 0);
-    if (fd >= 0) {
-        EXPECT(write(fd, "\n", 1) == 1);
-        close(fd);
-    }
 }
 
 void append_display(const char *bytes, size_t len, void *data)

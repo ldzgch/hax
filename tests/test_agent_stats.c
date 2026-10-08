@@ -3,10 +3,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include "agent_core.h"
 #include "agent_stats.h"
+#include "catalog_fixture.h"
+#include "env.h"
 #include "harness.h"
 #include "model_meta.h"
 #include "provider.h"
@@ -15,19 +16,7 @@
 /* Catalog misses are memoized, so install the fixture before any pricing call. */
 static void install_catalog(void)
 {
-    char *dir = t_tempdir();
-    setenv("XDG_CACHE_HOME", dir, 1);
-
-    char path[600];
-    snprintf(path, sizeof(path), "%s/hax", dir);
-    mkdir(path, 0755);
-    snprintf(path, sizeof(path), "%s/hax/catalog.json", dir);
-    FILE *file = fopen(path, "w");
-    EXPECT(file != NULL);
-    if (!file)
-        return;
-    fputs("{\"prov\": {\"models\": {\"m\": {\"cost\": {\"input\": 2, \"output\": 8}}}}}", file);
-    fclose(file);
+    t_catalog_write("{\"prov\": {\"models\": {\"m\": {\"cost\": {\"input\": 2, \"output\": 8}}}}}");
 }
 
 static struct stream_usage tokens(long input, long output, double cost)
@@ -181,7 +170,7 @@ static void test_estimates_and_unpriced_footers_mark_spend(void)
     /* Recorded before rates were known: priced lazily from the catalog through the live
      * provider, and the estimate splits into categories. */
     struct provider provider = {.name = "prov", .catalog_id = "prov"};
-    setenv("HAX_PROVIDER", "prov", 1);
+    t_env_set("HAX_PROVIDER", "prov");
     add_footer(&session, provider_stable_id(&provider), "m", tokens(1000000, 1000000, -1), -1, 0);
     agent_stats_collect(&session, 0, 0, &provider, &stats);
     EXPECT(stats.total.spend == 10.03);
@@ -204,7 +193,7 @@ static void test_estimates_and_unpriced_footers_mark_spend(void)
     agent_stats_collect(&session, 0, 0, &provider, &stats);
     EXPECT(stats.total.spend == 10.03);
     EXPECT(stats.total.unpriced);
-    unsetenv("HAX_PROVIDER");
+    t_env_unset("HAX_PROVIDER");
     model_meta_release(&provider);
     agent_session_free(&session);
 }

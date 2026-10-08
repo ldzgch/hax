@@ -5,7 +5,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <windows.h>
+
+#include "system/win_error.h"
+#include "system/win_utf8.h"
+#else
 #include <sys/utsname.h>
+#endif
 
 #include "buf.h"
 #include "xalloc.h"
@@ -92,21 +99,55 @@ char *os_release_name(const char *path)
 
 char *os_release_name_with_fallback(const char *primary_path, const char *fallback_path)
 {
+#ifdef _WIN32
+    wchar_t *wide = win_utf8_to_wide(primary_path);
+    if (!wide)
+        return NULL;
+    DWORD attributes = GetFileAttributesW(wide);
+    DWORD error = GetLastError();
+    free(wide);
+    if (attributes != INVALID_FILE_ATTRIBUTES)
+        return os_release_name(primary_path);
+    win_error_set_errno(error);
+#else
     struct stat st;
     if (stat(primary_path, &st) == 0)
         return os_release_name(primary_path);
+#endif
     if (errno != ENOENT && errno != ENOTDIR)
         return NULL;
     return os_release_name(fallback_path);
 }
 
+#ifndef _WIN32
 static char *linux_distribution_name(void)
 {
     return os_release_name_with_fallback("/etc/os-release", "/usr/lib/os-release");
 }
+#endif
 
 char *os_description(void)
 {
+#ifdef _WIN32
+    SYSTEM_INFO info;
+    GetNativeSystemInfo(&info);
+    const char *architecture;
+    switch (info.wProcessorArchitecture) {
+    case PROCESSOR_ARCHITECTURE_AMD64:
+        architecture = "x64";
+        break;
+    case PROCESSOR_ARCHITECTURE_ARM64:
+        architecture = "ARM64";
+        break;
+    case PROCESSOR_ARCHITECTURE_INTEL:
+        architecture = "x86";
+        break;
+    default:
+        architecture = "unknown architecture";
+        break;
+    }
+    return xasprintf("Windows (%s)", architecture);
+#else
     struct utsname u;
     if (uname(&u) != 0)
         return xstrdup("unknown");
@@ -122,4 +163,5 @@ char *os_description(void)
     if (strcmp(u.sysname, "Darwin") == 0)
         return xasprintf("macOS (Darwin %s)", u.release);
     return xasprintf("%s %s", u.sysname, u.release);
+#endif
 }

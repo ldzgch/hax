@@ -5,6 +5,7 @@
 
 #include "config.h"
 #include "diag.h"
+#include "env.h"
 #include "harness.h"
 #include "provider.h"
 #include "xalloc.h"
@@ -119,9 +120,9 @@ static void test_extra_body(void)
  * is a silent removal marker that never reaches a request. */
 static void test_extra_headers(void)
 {
-    setenv("HAX_TEST_HEADER", "from-env", 1);
-    setenv("HAX_TEST_EVIL_HEADER", "a\r\nX-Smuggled: gotcha", 1);
-    unsetenv("HAX_TEST_UNSET_HEADER");
+    t_env_set("HAX_TEST_HEADER", "from-env");
+    t_env_set("HAX_TEST_EVIL_HEADER", "a\r\nX-Smuggled: gotcha");
+    t_env_unset("HAX_TEST_UNSET_HEADER");
 
     unsigned long diagnostics_before = hax_diag_sequence();
     char **headers = provider_extra_headers("providers.extras");
@@ -147,8 +148,8 @@ static void test_extra_headers(void)
 
     EXPECT(provider_extra_headers("providers.myllm") == NULL);
     EXPECT(provider_extra_headers(NULL) == NULL);
-    unsetenv("HAX_TEST_HEADER");
-    unsetenv("HAX_TEST_EVIL_HEADER");
+    t_env_unset("HAX_TEST_HEADER");
+    t_env_unset("HAX_TEST_EVIL_HEADER");
 }
 
 /* Config headers replace def defaults of the same name, compared case-insensitively as HTTP
@@ -206,21 +207,21 @@ static void test_headers_merge_and_expand(void)
  * when the variable is unset; "$$" escapes a literal leading dollar. */
 static void test_api_key_env_escape(void)
 {
-    unsetenv("HAX_TEST_DOLLAR_KEY");
+    t_env_unset("HAX_TEST_DOLLAR_KEY");
     config_set_override("providers.dollartest.api_key", "$HAX_TEST_DOLLAR_KEY");
     EXPECT(provider_api_key("providers.dollartest", NULL) == NULL);
 
-    setenv("HAX_TEST_FALLBACK_KEY", "sk-fallback", 1);
+    t_env_set("HAX_TEST_FALLBACK_KEY", "sk-fallback");
     EXPECT_STR_EQ(provider_api_key("providers.dollartest", "HAX_TEST_FALLBACK_KEY"), "sk-fallback");
-    setenv("HAX_TEST_DOLLAR_KEY", "sk-dollar", 1);
+    t_env_set("HAX_TEST_DOLLAR_KEY", "sk-dollar");
     EXPECT_STR_EQ(provider_api_key("providers.dollartest", "HAX_TEST_FALLBACK_KEY"), "sk-dollar");
 
     config_set_override("providers.dollartest.api_key", "$$literal");
     EXPECT_STR_EQ(provider_api_key("providers.dollartest", NULL), "$literal");
 
     config_set_override("providers.dollartest.api_key", NULL);
-    unsetenv("HAX_TEST_DOLLAR_KEY");
-    unsetenv("HAX_TEST_FALLBACK_KEY");
+    t_env_unset("HAX_TEST_DOLLAR_KEY");
+    t_env_unset("HAX_TEST_FALLBACK_KEY");
 }
 
 /* Whether `name` appears in provider_all() (the selectable set). */
@@ -310,11 +311,11 @@ int main(void)
      * providers here name no model of their own, so an ambient HAX_MODEL is
      * the only way one arrives — drop it. The compat env aliases would
      * configure the shipped -compatible defs tested below. */
-    unsetenv("HAX_MODEL");
-    unsetenv("HAX_OPENAI_BASE_URL");
-    unsetenv("HAX_OPENAI_API_KEY");
-    unsetenv("HAX_ANTHROPIC_BASE_URL");
-    unsetenv("HAX_OPENAI_DISPLAY_NAME");
+    t_env_unset("HAX_MODEL");
+    t_env_unset("HAX_OPENAI_BASE_URL");
+    t_env_unset("HAX_OPENAI_API_KEY");
+    t_env_unset("HAX_ANTHROPIC_BASE_URL");
+    t_env_unset("HAX_OPENAI_DISPLAY_NAME");
 
     /* Loaded BEFORE any registry call, since the dynamic-provider set is built once and
      * cached. */
@@ -389,18 +390,18 @@ int main(void)
     /* A keyed provider's availability is its key resolving — no probe request:
      * unavailable while the declared env var is unset, available once set. */
     const struct provider_def *keyed_factory = provider_find("keyed");
-    unsetenv("HAX_TEST_KEYED_KEY");
+    t_env_unset("HAX_TEST_KEYED_KEY");
     struct provider_availability keyed = {0};
     provider_prepare_availability(keyed_factory, &keyed);
     EXPECT(!keyed.available);
     EXPECT_STR_EQ(keyed.reason, "HAX_TEST_KEYED_KEY not set");
     EXPECT(keyed.url == NULL);
     provider_availability_clear(&keyed);
-    setenv("HAX_TEST_KEYED_KEY", "sk-keyed", 1);
+    t_env_set("HAX_TEST_KEYED_KEY", "sk-keyed");
     provider_prepare_availability(keyed_factory, &keyed);
     EXPECT(keyed.available);
     EXPECT(keyed.url == NULL);
-    unsetenv("HAX_TEST_KEYED_KEY");
+    t_env_unset("HAX_TEST_KEYED_KEY");
 
     /* An inline api_key keys the provider all by itself. */
     const struct provider_def *inline_factory = provider_find("inline");
@@ -463,7 +464,7 @@ int main(void)
 
     /* Usage auth stays Bearer even when an api override routes the gateway's models through
      * the Messages dialect, whose model requests authenticate with x-api-key. */
-    setenv("OPENCODE_API_KEY", "oc-test-key", 1);
+    t_env_set("OPENCODE_API_KEY", "oc-test-key");
     config_set_override("providers.opencode-go.api", "anthropic-messages");
     struct provider *go_messages = provider_construct(go_factory);
     EXPECT(go_messages != NULL);
@@ -476,7 +477,7 @@ int main(void)
         go_messages->destroy(go_messages);
     }
     config_set_override("providers.opencode-go.api", NULL);
-    unsetenv("OPENCODE_API_KEY");
+    t_env_unset("OPENCODE_API_KEY");
 
     const struct provider_def *anthropic_factory = provider_find("claudish");
     EXPECT(anthropic_factory != NULL);
@@ -583,18 +584,18 @@ int main(void)
      * its completion route. An api_key (here via its env alias) keys it, and display_name
      * (env alias HAX_OPENAI_DISPLAY_NAME) labels the banner. No catalog identity: an
      * arbitrary endpoint's models are not a hosted vendor's. */
-    setenv("HAX_OPENAI_BASE_URL", "http://127.0.0.1:9007/v1/", 1);
+    t_env_set("HAX_OPENAI_BASE_URL", "http://127.0.0.1:9007/v1/");
     provider_prepare_availability(compat, &compat_avail);
     EXPECT(compat_avail.available);
     EXPECT(compat_avail.url == NULL);
     provider_availability_clear(&compat_avail);
 
-    setenv("HAX_OPENAI_API_KEY", "sk-compat", 1);
+    t_env_set("HAX_OPENAI_API_KEY", "sk-compat");
     provider_prepare_availability(compat, &compat_avail);
     EXPECT(compat_avail.available);
     EXPECT(compat_avail.url == NULL);
 
-    setenv("HAX_OPENAI_DISPLAY_NAME", "vLLM", 1);
+    t_env_set("HAX_OPENAI_DISPLAY_NAME", "vLLM");
     struct provider *compat_provider = provider_construct(compat);
     EXPECT(compat_provider != NULL);
     if (compat_provider) {
@@ -603,9 +604,9 @@ int main(void)
         EXPECT(compat_provider->catalog_id == NULL);
         compat_provider->destroy(compat_provider);
     }
-    unsetenv("HAX_OPENAI_DISPLAY_NAME");
-    unsetenv("HAX_OPENAI_API_KEY");
-    unsetenv("HAX_OPENAI_BASE_URL");
+    t_env_unset("HAX_OPENAI_DISPLAY_NAME");
+    t_env_unset("HAX_OPENAI_API_KEY");
+    t_env_unset("HAX_OPENAI_BASE_URL");
 
     expect_registry_projects_provider_fields();
     test_cache_ttl_resolution();

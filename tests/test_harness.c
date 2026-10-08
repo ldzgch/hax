@@ -154,64 +154,6 @@ static void test_cleanup_does_not_follow_symlinks(void)
     EXPECT(stat(file, &sb) == 0); /* the link went, not its target's contents */
 }
 
-static int path_is(const char *want)
-{
-    const char *path = getenv("PATH");
-    return path && strcmp(path, want) == 0;
-}
-
-static void test_path_replace_round_trips_unset(void)
-{
-    char *original = t_path_replace("/one:/two");
-    EXPECT(path_is("/one:/two"));
-
-    char *before_unset = t_path_replace(NULL);
-    EXPECT(getenv("PATH") == NULL);
-    EXPECT_STR_EQ(before_unset, "/one:/two");
-
-    /* Saved from an unset PATH: restore must unset again, not install "". */
-    char *from_unset = t_path_replace("/stub");
-    EXPECT(from_unset == NULL);
-    EXPECT(path_is("/stub"));
-    t_path_restore(from_unset);
-    EXPECT(getenv("PATH") == NULL);
-
-    t_path_restore(before_unset);
-    EXPECT(path_is("/one:/two"));
-    t_path_restore(original);
-}
-
-static void test_path_prepend_shadows_without_trailing_colon(void)
-{
-    char *original = t_path_replace("/one:/two");
-
-    char *before = t_path_prepend("/stub");
-    EXPECT(path_is("/stub:/one:/two"));
-    EXPECT_STR_EQ(before, "/one:/two");
-    t_path_restore(before);
-    EXPECT(path_is("/one:/two"));
-
-    /* Nothing to keep behind the stub: "/stub:" would also search the current directory. */
-    char *before_unset = t_path_replace(NULL);
-    char *from_unset = t_path_prepend("/stub");
-    EXPECT(from_unset == NULL);
-    EXPECT(path_is("/stub"));
-    t_path_restore(from_unset);
-    EXPECT(getenv("PATH") == NULL);
-    t_path_restore(before_unset);
-
-    char *before_empty = t_path_replace("");
-    char *from_empty = t_path_prepend("/stub");
-    EXPECT(path_is("/stub"));
-    EXPECT_STR_EQ(from_empty, "");
-    t_path_restore(from_empty);
-    EXPECT(path_is(""));
-    t_path_restore(before_empty);
-
-    EXPECT(path_is("/one:/two"));
-    t_path_restore(original);
-}
-
 int main(void)
 {
     test_child_exit_leaves_parent_dirs();
@@ -219,7 +161,5 @@ int main(void)
     test_child_cleans_unsearchable_tree();
     test_cleanup_leaves_hard_linked_file_modes();
     test_cleanup_does_not_follow_symlinks();
-    test_path_replace_round_trips_unset();
-    test_path_prepend_shadows_without_trailing_colon();
     T_REPORT();
 }

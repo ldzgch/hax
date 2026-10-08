@@ -3,7 +3,7 @@
 #define HAX_TOOLS_TASK_REGISTRY_H
 
 #include <stddef.h>
-#include <sys/types.h>
+#include <stdint.h>
 
 #include "tool.h"
 
@@ -34,7 +34,7 @@ char *task_name_error(const char *name);
  * exited). Returns the registry-owned id after taking ownership of the process, pipe_fd,
  * spool_fd, and spool_path, or NULL when the drainer thread cannot start — the caller then
  * retains ownership of all of them and should fall back to killing the command. */
-const char *task_adopt(pid_t pid, int pipe_fd, const char *command, const char *name,
+const char *task_adopt(intptr_t pid, int pipe_fd, const char *command, const char *name,
                        long started_ms, int spool_fd, char *spool_path, size_t spooled_bytes,
                        int binary, int pipe_eof);
 

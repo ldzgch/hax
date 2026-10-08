@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: MIT */
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "config.h"
 #include "harness.h"
 #include "trace.h"
 #include "system/fs.h"
+#include "system/path.h"
 
 /* HAX_TRACE must never write a credential to disk. Two exact rules: the protocol auth headers
  * (Authorization, x-api-key, api-key) are redacted by case-insensitive name, and a value
@@ -18,11 +18,7 @@ static void test_credential_headers_redacted(void)
      * destination; they never lazily resolve config themselves. */
     EXPECT(!trace_enabled());
 
-    char path[] = "/tmp/hax_trace_testXXXXXX";
-    int fd = mkstemp(path);
-    EXPECT(fd >= 0);
-    if (fd >= 0)
-        close(fd);
+    char *path = path_join(t_tempdir(), "trace-\xc3\xa9.txt");
 
     /* Point the trace at our temp file and initialize it explicitly. */
     config_set_override("trace", path);
@@ -99,7 +95,7 @@ static void test_credential_headers_redacted(void)
         EXPECT(strstr(contents, "\"token\": \"<redacted>\"") != NULL);
         free(contents);
     }
-    unlink(path);
+    free(path);
 }
 
 int main(void)

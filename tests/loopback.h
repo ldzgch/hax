@@ -4,6 +4,7 @@
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdint.h>
 
 /* A loopback HTTP server for tests. One background thread serves a scripted reply to each of
  * `n_requests` sequential connections and keeps the request it read. Zero-initialize, script the
@@ -28,7 +29,8 @@ struct loopback {
     _Atomic int released; /* set by loopback_release */
 
     /* Internal to the server. */
-    int listener_fd;
+    intptr_t listener_fd;
+    int sockets_initialized;
     pthread_t thread;
     int serving;
     char *owned[LOOPBACK_MAX_REQUESTS]; /* loopback_reply_ok allocations */

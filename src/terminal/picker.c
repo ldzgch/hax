@@ -2,13 +2,10 @@
 #include "terminal/picker.h"
 
 #include <errno.h>
-#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <termios.h>
 #include <unistd.h>
-#include <sys/ioctl.h>
 
 #include "buf.h"
 #include "xalloc.h"
@@ -17,6 +14,7 @@
 #include "terminal/input_core.h"
 #include "terminal/picker_core.h"
 #include "terminal/theme.h"
+#include "terminal/tty.h"
 #include "terminal/ui.h"
 #include "terminal/width.h"
 #include "text/display_safe.h"
@@ -47,20 +45,20 @@ struct picker {
     int previous_row_widths[PICKER_FRAME_ROWS_MAX];
     int terminal_cols;
     int terminal_rows;
-    struct termios saved_termios;
+    struct tty_mode *terminal_mode;
     int raw_mode_active;
 };
 
 static void get_terminal_size(int *terminal_cols, int *terminal_rows)
 {
-    struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
-        *terminal_cols = ws.ws_col > 0 ? ws.ws_col : 80;
-        *terminal_rows = ws.ws_row > 0 ? ws.ws_row : 24;
-    } else {
+    if (tty_size(terminal_cols, terminal_rows) < 0) {
         *terminal_cols = 80;
         *terminal_rows = 24;
     }
+    if (*terminal_cols <= 0)
+        *terminal_cols = 80;
+    if (*terminal_rows <= 0)
+        *terminal_rows = 24;
 }
 
 /* Picker content follows the configured display width but can never exceed the
@@ -75,16 +73,8 @@ static int picker_width(int terminal_cols)
 
 static int enable_raw_mode(struct picker *picker)
 {
-    if (tcgetattr(STDIN_FILENO, &picker->saved_termios) < 0)
-        return -1;
-    struct termios raw = picker->saved_termios;
-    raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
-    raw.c_iflag &= ~(IXON | ICRNL | INPCK | ISTRIP | BRKINT);
-    raw.c_oflag &= ~OPOST;
-    raw.c_cflag |= CS8;
-    raw.c_cc[VMIN] = 1;
-    raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSADRAIN, &raw) < 0)
+    picker->terminal_mode = tty_raw_enter(0);
+    if (!picker->terminal_mode)
         return -1;
     picker->raw_mode_active = 1;
     return 0;
@@ -94,34 +84,19 @@ static void disable_raw_mode(struct picker *picker)
 {
     if (!picker->raw_mode_active)
         return;
-    tcsetattr(STDIN_FILENO, TCSADRAIN, &picker->saved_termios);
+    tty_raw_leave(picker->terminal_mode);
+    picker->terminal_mode = NULL;
     picker->raw_mode_active = 0;
 }
 
 static int read_byte_blocking(unsigned char *output)
 {
-    for (;;) {
-        ssize_t bytes_read = read(STDIN_FILENO, output, 1);
-        if (bytes_read == 1)
-            return 1;
-        if (bytes_read == 0)
-            return 0;
-        if (errno == EINTR)
-            continue;
-        return -1;
-    }
+    return tty_read_byte(output, -1);
 }
 
 static int read_byte_timeout(unsigned char *output, int timeout_ms)
 {
-    struct pollfd input = {.fd = STDIN_FILENO, .events = POLLIN};
-    int result;
-    do {
-        result = poll(&input, 1, timeout_ms);
-    } while (result < 0 && errno == EINTR);
-    if (result <= 0)
-        return result;
-    return read_byte_blocking(output);
+    return tty_read_byte(output, timeout_ms);
 }
 
 /* Replay the byte used to distinguish bare Escape before continuing the timed read. */

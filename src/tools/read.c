@@ -1,15 +1,19 @@
 /* SPDX-License-Identifier: MIT */
 #include <ctype.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <jansson.h>
 #include <limits.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#else
 #include <strings.h>
 #include <unistd.h>
-#include <sys/stat.h>
+#endif
 
 #include "buf.h"
 #include "provider.h"
@@ -93,7 +97,7 @@ static int stream_has_more_content(int fd, size_t consumed, size_t chunk_len)
         return 1;
 
     char byte;
-    ssize_t bytes_read;
+    ptrdiff_t bytes_read;
     do {
         bytes_read = read(fd, &byte, 1);
     } while (bytes_read < 0 && errno == EINTR);
@@ -112,7 +116,7 @@ static int read_text_slice(const char *path, long offset, long limit, size_t out
     result->is_binary = 0;
     result->line_count = 0;
 
-    int fd = open(path, O_RDONLY);
+    int fd = fs_open_regular(path);
     if (fd < 0)
         return -1;
 
@@ -135,7 +139,7 @@ static int read_text_slice(const char *path, long offset, long limit, size_t out
     int needs_prefix = in_range;
 
     for (;;) {
-        ssize_t bytes_read = read(fd, chunk, sizeof(chunk));
+        ptrdiff_t bytes_read = read(fd, chunk, sizeof(chunk));
         if (bytes_read < 0) {
             if (errno == EINTR)
                 continue;
@@ -339,8 +343,8 @@ static char *read_image(const char *path, size_t file_size, struct tool_run_ctx 
 static int file_has_image_signature(const char *path)
 {
     unsigned char header[16];
-    ssize_t bytes_read;
-    int fd = open(path, O_RDONLY);
+    ptrdiff_t bytes_read;
+    int fd = fs_open_regular(path);
     if (fd < 0)
         return 0;
 
@@ -433,28 +437,26 @@ static char *run(const char *args_json, struct tool_run_ctx *ctx)
         goto out;
 
     path = path_expand_home(raw_path);
-    struct stat st;
-    if (stat(path, &st) < 0) {
-        result = xasprintf("error reading %s: %s", path, strerror(errno));
-        goto out;
-    }
-    /* Opening a FIFO without a writer can block indefinitely. */
-    if (!S_ISREG(st.st_mode)) {
-        result = xasprintf("%s exists but is not a regular file", path);
+    uint64_t file_size;
+    if (fs_file_size(path, &file_size) < 0) {
+        if (errno == EINVAL || errno == EISDIR)
+            result = xasprintf("%s exists but is not a regular file", path);
+        else
+            result = xasprintf("error reading %s: %s", path, strerror(errno));
         goto out;
     }
 
     /* Image signatures must be checked before the text reader's binary-file rejection. */
     if (file_has_image_signature(path)) {
-        result = read_image(path, (size_t)st.st_size, ctx);
+        result = read_image(path, (size_t)file_size, ctx);
         goto out;
     }
 
     size_t output_limit = output_cap_bytes();
-    if (!offset_provided && !limit_provided && (size_t)st.st_size > output_limit) {
+    if (!offset_provided && !limit_provided && file_size > output_limit) {
         result = xasprintf("%s is %lld bytes; cap is %zu. Pass offset/limit to read a slice, "
                            "or use bash with grep/head/tail.",
-                           path, (long long)st.st_size, output_limit);
+                           path, (long long)file_size, output_limit);
         goto out;
     }
 

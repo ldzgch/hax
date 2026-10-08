@@ -20,42 +20,11 @@
 /* path_join is __APPLE__-only here, invisible to the Linux lint pass. */
 #include "system/path.h" // IWYU pragma: keep
 #include "system/spawn.h"
-#include "terminal/ansi.h"
-#include "text/base64.h"
 
 /* Cap untrusted helper output before it reaches the editor or image decoder. */
 #define CLIPBOARD_IMAGE_MAX_BYTES (64u << 20)
 #define CLIPBOARD_TEXT_MAX_BYTES  (1u << 20)
 #define CLIPBOARD_TYPES_MAX_BYTES (64u << 10)
-
-#define OSC52_PREFIX      ANSI_ESC "]52;c;"
-#define OSC52_SUFFIX      ANSI_BEL
-#define TMUX_OSC52_PREFIX ANSI_TMUX_PASSTHROUGH_BEGIN OSC52_PREFIX
-#define TMUX_OSC52_SUFFIX OSC52_SUFFIX ANSI_TMUX_PASSTHROUGH_END
-
-char *clipboard_osc52_sequence(const char *text, size_t text_len, int tmux_wrap, size_t *out_len)
-{
-    if (text_len > CLIPBOARD_OSC52_MAX_BYTES)
-        return NULL;
-
-    size_t encoded_len;
-    char *encoded = base64_encode(text, text_len, &encoded_len);
-    const char *prefix = tmux_wrap ? TMUX_OSC52_PREFIX : OSC52_PREFIX;
-    const char *suffix = tmux_wrap ? TMUX_OSC52_SUFFIX : OSC52_SUFFIX;
-    size_t prefix_len = strlen(prefix);
-    size_t suffix_len = strlen(suffix);
-    size_t sequence_len = prefix_len + encoded_len + suffix_len;
-    char *sequence = xmalloc(sequence_len + 1);
-
-    memcpy(sequence, prefix, prefix_len);
-    memcpy(sequence + prefix_len, encoded, encoded_len);
-    memcpy(sequence + prefix_len + encoded_len, suffix, suffix_len + 1);
-    free(encoded);
-
-    if (out_len)
-        *out_len = sequence_len;
-    return sequence;
-}
 
 /* Use argv-based exec so probing PATH never invokes a shell. */
 static int run_copy_helper(const char *const *argv, const char *text, size_t text_len)

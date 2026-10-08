@@ -2,8 +2,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#endif
 #include <unistd.h>
 
+#include "files.h"
 #include "harness.h"
 #include "render/disp.h"
 #include "render/tool_render.h"
@@ -20,13 +24,11 @@ static char capture_buf[131072];
 static void capture_init(void)
 {
     locale_init_utf8();
-    char path[64];
-    snprintf(path, sizeof(path), "/tmp/haxrender.%d.out", (int)getpid());
-    if (!freopen(path, "w+", stdout)) {
-        perror("freopen");
+    FILE *capture = t_tmpfile();
+    if (!capture || dup2(fileno(capture), STDOUT_FILENO) < 0) {
+        perror("stdout capture");
         exit(1);
     }
-    unlink(path);
 }
 
 static void capture_reset(void)

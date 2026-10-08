@@ -1,13 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 #include "agent_env.h"
 
-#include <dirent.h>
-#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/stat.h>
 
 #include "buf.h"
 #include "config.h"
@@ -107,11 +103,11 @@ static void append_command_summary(struct buf *prompt)
 
 static void append_environment(struct buf *prompt, const char *model)
 {
-    char cwd[PATH_MAX];
-    if (!getcwd(cwd, sizeof(cwd)))
-        snprintf(cwd, sizeof(cwd), "(unknown)");
+    char *cwd = path_cwd();
+    if (!cwd)
+        cwd = xstrdup("(unknown)");
 
-    const char *home = getenv("HOME");
+    char *home = path_home();
     char *shell = bash_resolve_shell();
     char *os = os_description();
     char *project_root = git_find_worktree_root(cwd);
@@ -148,6 +144,8 @@ static void append_environment(struct buf *prompt, const char *model)
     free(shell);
     free(os);
     free(project_root);
+    free(home);
+    free(cwd);
 }
 
 static void append_agents_file(struct buf *prompt, const char *path, const char *display_path,
@@ -188,8 +186,8 @@ static void append_agents_file(struct buf *prompt, const char *path, const char 
 
 static void append_project_agents_files(struct buf *prompt, int *has_project_context)
 {
-    char cwd[PATH_MAX];
-    if (!getcwd(cwd, sizeof(cwd)))
+    char *cwd = path_cwd();
+    if (!cwd)
         return;
 
     char *project_root = git_find_worktree_root(cwd);
@@ -200,6 +198,7 @@ static void append_project_agents_files(struct buf *prompt, int *has_project_con
         append_agents_file(prompt, path, display_path, has_project_context);
         free(display_path);
         free(path);
+        free(cwd);
         return;
     }
 
@@ -208,8 +207,7 @@ static void append_project_agents_files(struct buf *prompt, int *has_project_con
     char *paths[PROJECT_MAX_DEPTH];
     char *display_paths[PROJECT_MAX_DEPTH];
     size_t path_count = 0;
-    char dir[PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s", cwd);
+    char *dir = cwd;
     for (int depth = 0; depth < PROJECT_MAX_DEPTH; depth++) {
         paths[path_count] = path_join(dir, "AGENTS.md");
         display_paths[path_count] = path_collapse_home(paths[path_count]);
@@ -219,6 +217,7 @@ static void append_project_agents_files(struct buf *prompt, int *has_project_con
             break;
     }
     free(project_root);
+    free(cwd);
 
     while (path_count > 0) {
         size_t index = --path_count;
@@ -296,70 +295,66 @@ static void skill_list_free(struct skill_list *skills)
     free(skills->entries);
 }
 
-/* Earlier roots win when duplicate skill names are found. */
-static void collect_skills(struct skill_list *skills, const char *root)
+struct skill_root {
+    struct skill_list *skills;
+    const char *path;
+};
+
+static void collect_skill(const char *entry_name, void *ctx)
 {
-    DIR *dir = opendir(root);
-    if (!dir)
+    struct skill_root *root = ctx;
+    if (entry_name[0] == '.')
         return;
 
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.')
-            continue;
-
-        /* Keep raw filesystem bytes for I/O, but compare and display sanitized names. */
-        char *name = utf8_sanitize(entry->d_name, strlen(entry->d_name));
-        if (skill_list_contains(skills, name)) {
-            free(name);
-            continue;
-        }
-
-        char *skill_dir = path_join(root, entry->d_name);
-        char *skill_path = path_join(skill_dir, "SKILL.md");
-        free(skill_dir);
-        size_t frontmatter_len = 0;
-        char *frontmatter =
-            fs_read_file_capped(skill_path, SKILL_FRONTMATTER_MAX_BYTES, &frontmatter_len, NULL);
-        if (!frontmatter) {
-            free(name);
-            free(skill_path);
-            continue;
-        }
-
-        struct skill_entry skill = {
-            .name = name,
-            .display_path = sanitize_display_path(skill_path),
-            .description = read_skill_description(frontmatter, frontmatter_len),
-        };
-        skill_list_add(skills, skill);
-        free(frontmatter);
-        free(skill_path);
+    /* Keep raw filesystem bytes for I/O, but compare and display sanitized names. */
+    char *name = utf8_sanitize(entry_name, strlen(entry_name));
+    if (skill_list_contains(root->skills, name)) {
+        free(name);
+        return;
     }
-    closedir(dir);
+
+    char *skill_dir = path_join(root->path, entry_name);
+    char *skill_path = path_join(skill_dir, "SKILL.md");
+    free(skill_dir);
+    size_t frontmatter_len = 0;
+    char *frontmatter =
+        fs_read_file_capped(skill_path, SKILL_FRONTMATTER_MAX_BYTES, &frontmatter_len, NULL);
+    if (!frontmatter) {
+        free(name);
+        free(skill_path);
+        return;
+    }
+
+    struct skill_entry skill = {
+        .name = name,
+        .display_path = sanitize_display_path(skill_path),
+        .description = read_skill_description(frontmatter, frontmatter_len),
+    };
+    skill_list_add(root->skills, skill);
+    free(frontmatter);
+    free(skill_path);
+}
+
+/* Earlier roots win when duplicate skill names are found. */
+static void collect_skills(struct skill_list *skills, const char *path)
+{
+    struct skill_root root = {.skills = skills, .path = path};
+    fs_list_directory(path, collect_skill, &root);
 }
 
 /* Walk nearest-first so closer project skills shadow ancestors; without a Git root, inspect only
  * cwd. */
 static void collect_project_skills(struct skill_list *skills, const char *excluded_root)
 {
-    char cwd[PATH_MAX];
-    if (!getcwd(cwd, sizeof(cwd)))
+    char *cwd = path_cwd();
+    if (!cwd)
         return;
 
-    /* Device and inode identify a symlinked $HOME root when getcwd() uses its physical path. */
-    struct stat excluded_stat;
-    int have_excluded_root = excluded_root && stat(excluded_root, &excluded_stat) == 0;
-
     char *project_root = git_find_worktree_root(cwd);
-    char dir[PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s", cwd);
+    char *dir = cwd;
     for (int depth = 0; depth < PROJECT_MAX_DEPTH; depth++) {
         char *skills_dir = path_join(dir, ".agents/skills");
-        struct stat skills_stat;
-        int is_excluded = have_excluded_root && stat(skills_dir, &skills_stat) == 0 &&
-                          skills_stat.st_dev == excluded_stat.st_dev &&
-                          skills_stat.st_ino == excluded_stat.st_ino;
+        int is_excluded = excluded_root && fs_same_file(skills_dir, excluded_root) == 1;
         if (!is_excluded)
             collect_skills(skills, skills_dir);
         free(skills_dir);
@@ -368,13 +363,16 @@ static void collect_project_skills(struct skill_list *skills, const char *exclud
             break;
     }
     free(project_root);
+    free(cwd);
 }
 
 static void append_skills(struct buf *prompt)
 {
     struct skill_list skills = {0};
-    const char *home = getenv("HOME");
+    char *home = path_home();
     char *shared_root = (home && *home) ? path_join(home, ".agents/skills") : NULL;
+
+    free(home);
 
     /* ~/.agents/skills is shared across agents. Hold it out of the project walk so cwd under $HOME
      * cannot move it ahead of hax's XDG skill root. */

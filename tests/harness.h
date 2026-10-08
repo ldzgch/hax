@@ -43,7 +43,9 @@ extern int t_skips;
 #define EXPECT_STR_EQ(got, want)                                                                   \
     do {                                                                                           \
         const char *_g = (got), *_w = (want);                                                      \
-        if (strcmp(_g, _w) != 0)                                                                   \
+        if (!_g || !_w)                                                                            \
+            FAIL("string is null (want %p, got %p)", (const void *)_w, (const void *)_g);          \
+        else if (strcmp(_g, _w) != 0)                                                              \
             FAIL("want \"%s\", got \"%s\"", _w, _g);                                               \
     } while (0)
 
@@ -73,7 +75,8 @@ extern int t_skips;
         return t_failures != 0;                                                                    \
     } while (0)
 
-/* Create a scratch directory under /tmp and return its canonical path: on macOS, /tmp is a symlink
+/* Create a scratch directory under /tmp (the native temp directory on Windows) and return its
+ * canonical path with forward-slash separators: on macOS, /tmp is a symlink
  * that getcwd() resolves. The harness owns the path and removes the tree when the creating process
  * exits, even if a fixture locked it down; callers must not free or remove it, nor leave spawned
  * processes using it. Aborts on failure. */

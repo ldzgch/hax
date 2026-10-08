@@ -3,11 +3,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include "config.h"
 #include "diag.h"
 #include "effort.h"
+#include "env.h"
+#include "files.h"
 #include "harness.h"
 #include "provider.h"
 #include "xalloc.h"
@@ -46,7 +47,7 @@ static int setup_scratch_login(void)
 
     char path[4096];
     snprintf(path, sizeof(path), "%s/.codex", home);
-    if (mkdir(path, 0700) != 0)
+    if (t_mkdir(path, 0700) != 0)
         return -1;
     snprintf(path, sizeof(path), "%s/.codex/auth.json", home);
     FILE *auth_file = fopen(path, "w");
@@ -55,10 +56,10 @@ static int setup_scratch_login(void)
     fputs("{\"tokens\": {\"access_token\": \"t\", \"account_id\": \"a\"}}", auth_file);
     fclose(auth_file);
 
-    setenv("HOME", home, 1);
+    t_env_set("HOME", home);
     /* Keep the developer's own hax credential store out of the auth lookup. */
-    unsetenv("XDG_STATE_HOME");
-    unsetenv("HAX_MODEL");
+    t_env_set("XDG_STATE_HOME", home);
+    t_env_unset("HAX_MODEL");
     return 0;
 }
 

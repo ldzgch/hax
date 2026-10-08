@@ -1,8 +1,13 @@
 /* SPDX-License-Identifier: MIT */
 #include <stdio.h>
+#ifdef _WIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 
 #include "diag.h"
+#include "files.h"
 #include "harness.h"
 
 static void test_diag_sequence(void)
@@ -10,7 +15,7 @@ static void test_diag_sequence(void)
     fflush(stderr);
     int saved = dup(STDERR_FILENO);
     EXPECT(saved >= 0);
-    FILE *tmp = tmpfile();
+    FILE *tmp = t_tmpfile();
     EXPECT(tmp != NULL);
     EXPECT(dup2(fileno(tmp), STDERR_FILENO) >= 0);
 

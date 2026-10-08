@@ -3,11 +3,10 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-/* POSIX declares the wait macros here; some libc headers also expose them indirectly. */
-#include <sys/wait.h> // IWYU pragma: keep
 
 #include "diag.h"
 #include "xalloc.h"
@@ -59,7 +58,9 @@ static int query_uses_external_root(const char *query)
         return 1;
     if (query[0] == '~' && (query[1] == '\0' || query[1] == '/'))
         return 1;
-    return query[0] == '.' && query[1] == '.' && (query[2] == '\0' || query[2] == '/');
+    return (query[0] == '.' && query[1] == '.' &&
+            (query[2] == '\0' || path_is_separator(query[2]))) ||
+           path_is_absolute(query);
 }
 
 static struct picker_query parse_picker_query(const char *text)
@@ -73,18 +74,21 @@ static struct picker_query parse_picker_query(const char *text)
         return query;
     }
 
-    const char *slash = strrchr(text, '/');
-    if (!slash) {
+    const char *separator = NULL;
+    for (const char *cursor = text; *cursor; cursor++)
+        if (path_is_separator(*cursor))
+            separator = cursor;
+    if (!separator) {
         query.root = xasprintf("%s/", text);
         query.filter = xstrdup("");
         return query;
     }
 
-    size_t root_len = (size_t)(slash - text + 1);
+    size_t root_len = (size_t)(separator - text + 1);
     query.root = xmalloc(root_len + 1);
     memcpy(query.root, text, root_len);
     query.root[root_len] = '\0';
-    query.filter = xstrdup(slash + 1);
+    query.filter = xstrdup(separator + 1);
     return query;
 }
 
@@ -166,7 +170,7 @@ static char *pick_with_fzf(const char *query_text)
         }
 
         int status = spawn_pipe_close(&pipe);
-        if (status < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        if (!spawn_status_success(status)) {
             free(picked_path);
             picked_path = NULL;
         }

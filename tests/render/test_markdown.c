@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "buf.h"
+#include "env.h"
 #include "harness.h"
 #include "xalloc.h"
 #include "render/markdown.h"
@@ -3072,12 +3073,12 @@ static void test_wrap_heading_not_wrapped(void)
 static void test_md_cols_never_reaches_last_column(void)
 {
     int edge = term_width();
-    setenv("HAX_DISPLAY_WIDTH", "500", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "500");
     EXPECT(display_width() == 500); /* configuration alone would overflow */
     EXPECT(md_cols() == edge - 1);
-    setenv("HAX_DISPLAY_WIDTH", "terminal", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "terminal");
     EXPECT(md_cols() == edge - 1);
-    unsetenv("HAX_DISPLAY_WIDTH");
+    t_env_unset("HAX_DISPLAY_WIDTH");
 }
 
 /* A display width comfortably inside the terminal is used as-is — the edge
@@ -3089,9 +3090,9 @@ static void test_md_cols_follows_narrower_display_width(void)
         T_SKIP("terminal too narrow to distinguish the cases");
         return;
     }
-    setenv("HAX_DISPLAY_WIDTH", "30", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "30");
     EXPECT(md_cols() == 30);
-    unsetenv("HAX_DISPLAY_WIDTH");
+    t_env_unset("HAX_DISPLAY_WIDTH");
 }
 
 int main(void)

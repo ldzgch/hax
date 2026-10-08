@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "buf.h"
+#include "env.h"
 #include "harness.h"
 #include "tool.h"
 #include "xalloc.h"
@@ -16,7 +17,7 @@
 
 static void test_wait_streams_output_live(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *gate = gate_create();
     /* The final line waits until the display has shown the first, so only a live stream can deliver
      * both. */
@@ -51,13 +52,13 @@ static void test_wait_streams_output_live(void)
     free(id);
     free(shown_gate);
     buf_free(&capture.buf);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_wait_times_out_on_running_task(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
-    setenv("HAX_TASK_WAIT_TIMEOUT", "50ms", 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
+    t_env_set("HAX_TASK_WAIT_TIMEOUT", "50ms");
     char *out = call_bash_background("sleep 5");
     char *id = extract_task_id(out);
     EXPECT(id != NULL);
@@ -78,16 +79,16 @@ static void test_wait_times_out_on_running_task(void)
     free(out);
 
     out = kill_id(id);
-    EXPECT(strstr(out, "killed (signal ") != NULL);
+    expect_task_stopped(out);
     free(out);
     free(id);
-    unsetenv("HAX_TASK_WAIT_TIMEOUT");
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_TASK_WAIT_TIMEOUT");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_wait_returns_early_when_other_task_finishes(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *out = call_bash_background("sleep 30");
     char *slow_id = extract_task_id(out);
     EXPECT(slow_id != NULL);
@@ -129,12 +130,12 @@ static void test_wait_returns_early_when_other_task_finishes(void)
     free(kill_id(slow_id));
     free(slow_id);
     free(quick_id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_wait_after_empty_note_reports_status(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *gate = gate_create();
     char *cmd = xasprintf("read -r _ <%s", gate);
     char *out = call_bash_background(cmd);
@@ -169,12 +170,12 @@ static void test_wait_after_empty_note_reports_status(void)
     EXPECT(strstr(out, "; no output]") != NULL);
     free(out);
     free(id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_kill_delivers_pending_output(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *first_gate = gate_create();
     char *last_gate = gate_create();
     char *cmd =
@@ -206,23 +207,23 @@ static void test_kill_delivers_pending_output(void)
     /* One call: the kill, the pending output, and the final status. */
     out = kill_id(id);
     EXPECT(strstr(out, "pending-output") != NULL);
-    EXPECT(strstr(out, "killed (signal ") != NULL);
+    expect_task_stopped(out);
     free(out);
 
     /* Kill-and-collect delivered everything; a repeat wait gets only the final status. */
     out = wait_for_id(id, 1);
     EXPECT(strstr(out, "pending-output") == NULL);
-    EXPECT(strstr(out, "killed (signal ") != NULL);
+    expect_task_stopped(out);
     EXPECT(strstr(out, "; no new output]") != NULL);
     free(out);
     free(id);
     free(last_gate);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_kill_fires_at_wait_deadline(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *out = call_bash_background("sleep 30");
     char *id = extract_task_id(out);
     EXPECT(id != NULL);
@@ -230,16 +231,16 @@ static void test_kill_fires_at_wait_deadline(void)
 
     /* Below the tool's whole-second timeout_seconds, so the deadline costs little. */
     out = task_wait_stream(id ? id : "?", 50, 1, NULL, NULL);
-    EXPECT(strstr(out, "killed (signal ") != NULL);
+    expect_task_stopped(out);
     EXPECT(strstr(out, "wait timed out") == NULL);
     free(out);
     free(id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_kill_spares_task_finishing_within_timeout(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *gate = gate_create();
     char *cmd = xasprintf("read -r _ <%s; echo done-first", gate);
     char *out = call_bash_background(cmd);
@@ -261,12 +262,12 @@ static void test_kill_spares_task_finishing_within_timeout(void)
     EXPECT(strstr(out, "killed (signal ") == NULL);
     free(out);
     free(id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_kill_now_beats_pending_foreign_completion(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *out = call_bash_background("sleep 30");
     char *slow_id = extract_task_id(out);
     EXPECT(slow_id != NULL);
@@ -297,19 +298,19 @@ static void test_kill_now_beats_pending_foreign_completion(void)
 
     /* An immediate kill must fire, not yield to the pending foreign completion. */
     out = kill_id(slow_id);
-    EXPECT(strstr(out, "killed (signal ") != NULL);
+    expect_task_stopped(out);
     EXPECT(strstr(out, "another task finished") == NULL);
     free(out);
 
     free(wait_for_id(quick_id, 1));
     free(slow_id);
     free(quick_id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_foreign_completion_ends_kill_wait_without_killing(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *out = call_bash_background("sleep 30");
     char *slow_id = extract_task_id(out);
     EXPECT(slow_id != NULL);
@@ -334,18 +335,18 @@ static void test_foreign_completion_ends_kill_wait_without_killing(void)
     free(out);
 
     out = kill_id(slow_id);
-    EXPECT(strstr(out, "killed (signal ") != NULL);
+    expect_task_stopped(out);
     free(out);
     free(wait_for_id(quick_id, 1));
     free(slow_id);
     free(quick_id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_binary_markers_reach_display(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
-    setenv("HAX_BASH_TRANSITION_MIN_BYTES", "3", 1); /* 'A\0B' */
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
+    t_env_set("HAX_BASH_TRANSITION_MIN_BYTES", "3"); /* 'A\0B' */
     char *gate = gate_create();
     /* Binary output is never streamed, so the suppression marker itself must be shown. */
     char *args = xasprintf("{\"command\":\"printf 'A\\\\000B'; read -r _ <%s; printf 'C\\\\000D'\","
@@ -365,12 +366,12 @@ static void test_binary_markers_reach_display(void)
     buf_free(&launch_capture.buf);
 
     /* Nothing new arrived, so the marker is not re-reported as fresh output. */
-    setenv("HAX_TASK_WAIT_TIMEOUT", "50ms", 1);
+    t_env_set("HAX_TASK_WAIT_TIMEOUT", "50ms");
     out = wait_for_id(id ? id : "?", 0);
     EXPECT(strstr(out, "[binary output suppressed") == NULL);
     EXPECT(strstr(out, "no new output") != NULL);
     free(out);
-    unsetenv("HAX_TASK_WAIT_TIMEOUT");
+    t_env_unset("HAX_TASK_WAIT_TIMEOUT");
 
     gate_release(gate);
     free(gate);
@@ -389,8 +390,8 @@ static void test_binary_markers_reach_display(void)
            strstr(wait_capture.buf.data, "finished (exit 0)") != NULL);
     buf_free(&wait_capture.buf);
     free(id);
-    unsetenv("HAX_BASH_TRANSITION_MIN_BYTES");
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_TRANSITION_MIN_BYTES");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_binary_marker_shown_after_streamed_text_at_launch(void)
@@ -398,8 +399,8 @@ static void test_binary_marker_shown_after_streamed_text_at_launch(void)
     /* The NUL waits until the display has shown the text, so the text streams (and would have
      * swallowed the marker) before binary hits; the held transition keeps both inside the launch
      * window. */
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
-    setenv("HAX_BASH_TRANSITION_MIN_BYTES", "11", 1); /* "visible\n" + 'A\0B' */
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
+    t_env_set("HAX_BASH_TRANSITION_MIN_BYTES", "11"); /* "visible\n" + 'A\0B' */
     char *gate = gate_create();
     char *shown_gate = gate_create();
     char *cmd = xasprintf("{\"command\":\"echo visible; read -r _ <%s; printf 'A\\\\000B'; "
@@ -424,13 +425,13 @@ static void test_binary_marker_shown_after_streamed_text_at_launch(void)
     free(shown_gate);
     free(wait_for_id(id, 5));
     free(id);
-    unsetenv("HAX_BASH_TRANSITION_MIN_BYTES");
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_TRANSITION_MIN_BYTES");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_binary_marker_shown_after_streamed_text_in_wait(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *gate = gate_create();
     /* Text streams during the wait first, then the NUL turns the task binary before it ends; the
      * NUL waits until the display has shown the text, keeping the two in separate chunks. */
@@ -459,16 +460,13 @@ static void test_binary_marker_shown_after_streamed_text_in_wait(void)
            strstr(capture.buf.data, "[binary output suppressed") != NULL);
     buf_free(&capture.buf);
     free(id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_runaway_output_killed_without_polling(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
-    char path[] = "/tmp/hax-test-task-runaway-XXXXXX";
-    int fd = mkstemp(path);
-    EXPECT(fd >= 0);
-    close(fd);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
+    char *path = xasprintf("%s/producer.pid", t_tempdir());
 
     /* The producer is the shell's child, not the shell: once killed it is reaped by init (the shell
      * itself would linger as a zombie until a registry poll reaps it). The gate holds the flood
@@ -486,7 +484,6 @@ static void test_runaway_output_killed_without_polling(void)
     free(out);
 
     int pid = await_pid_file(path);
-    unlink(path);
     EXPECT(pid > 0);
 
     gate_release(gate);
@@ -496,11 +493,12 @@ static void test_runaway_output_killed_without_polling(void)
     EXPECT(process_is_gone(pid));
 
     out = wait_for_id(id, 30);
-    EXPECT(strstr(out, "killed (signal ") != NULL);
+    expect_task_stopped(out);
     EXPECT(strstr(out, "[output limit reached: ") != NULL);
     free(out);
     free(id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    free(path);
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_wait_missing_or_unknown_id(void)
@@ -524,7 +522,7 @@ static void test_wait_missing_or_unknown_id(void)
 
 static void test_detached_log_holds_full_output(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *gate = gate_create();
     char *cmd = xasprintf("echo first; read -r _ <%s; echo second", gate);
     char *out = call_bash_background(cmd);
@@ -560,13 +558,13 @@ static void test_detached_log_holds_full_output(void)
         }
     }
     free(id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_large_collection_keeps_head_and_tail(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
-    setenv("HAX_TOOL_OUTPUT_CAP", "50k", 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
+    t_env_set("HAX_TOOL_OUTPUT_CAP", "50k");
     char *gate = gate_create();
     char *cmd = xasprintf("read -r _ <%s; echo FIRST-ERROR; seq 1 20000; echo LAST-LINE", gate);
     char *out = call_bash_background(cmd);
@@ -589,15 +587,15 @@ static void test_large_collection_keeps_head_and_tail(void)
     EXPECT(strstr(out, "full output: ") != NULL);
     free(out);
     free(id);
-    unsetenv("HAX_TOOL_OUTPUT_CAP");
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_TOOL_OUTPUT_CAP");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 int main(void)
 {
     /* Kill waits sit out the full SIGTERM grace, so the default 2s would dominate the suite; tests
      * needing a real grace window override and restore this. */
-    setenv("HAX_BASH_TIMEOUT_GRACE", TEST_KILL_GRACE, 1);
+    t_env_set("HAX_BASH_TIMEOUT_GRACE", TEST_KILL_GRACE);
     test_wait_streams_output_live();
     test_wait_times_out_on_running_task();
     test_wait_returns_early_when_other_task_finishes();

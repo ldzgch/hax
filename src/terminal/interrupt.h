@@ -3,20 +3,23 @@
 #define HAX_TERMINAL_INTERRUPT_H
 
 /* Initialize bare-Esc detection and terminal restoration. Detection is available only when stdin
- * and stdout are TTYs; otherwise the watcher API is inert and request queries return false. */
+ * and stdout are TTYs; otherwise the watcher API is inert. Driver-signal requests are independent
+ * of the watcher and can still be installed for headless runs. */
 void interrupt_init(void);
 
 /* Install fatal-signal handlers without starting the TTY watcher. The handlers invoke the optional
  * hook, restore terminal state, and re-raise the signal with its default disposition. */
 void interrupt_install_fatal_signal_handlers(void);
 
-/* The hook runs from a signal handler and must be async-signal-safe. */
+/* The hook runs from a signal handler (or a Windows console-control thread). It must be
+ * allocation-free, avoid stdio, and use only operations safe for that platform's fatal cleanup. */
 void interrupt_set_fatal_signal_hook(void (*hook)(void));
 
 /* Install handlers that translate driver signals into requests for headless runs: SIGINT and
  * SIGTERM latch an abort — a repeat escalates to the fatal path — and SIGUSR1 latches a pause.
  * Overrides the fatal handlers for these signals, so install those first for the escalation
- * (and the remaining fatal signals) to keep their cleanup. */
+ * (and the remaining fatal signals) to keep their cleanup. On Windows, Ctrl-C requests abort and
+ * Ctrl-Break requests pause; C runtime SIGINT and SIGTERM also request abort. */
 void interrupt_install_request_signal_handlers(void);
 
 /* Start bare-Esc detection. The first Esc requests a pause and the second requests an immediate

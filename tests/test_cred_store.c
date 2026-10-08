@@ -3,12 +3,13 @@
 #include <jansson.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
+#include <string.h>
 
 #include "cred_store.h"
+#include "env.h"
+#include "files.h"
 #include "harness.h"
+#include "process.h"
 #include "xalloc.h"
 #include "system/fs.h"
 
@@ -16,7 +17,7 @@
 static void scratch_state_home(void)
 {
     char *dir = t_tempdir();
-    setenv("XDG_STATE_HOME", dir, 1);
+    t_env_set("XDG_STATE_HOME", dir);
 }
 
 static void test_missing_store(void)
@@ -59,9 +60,7 @@ static void test_store_mode_0600(void)
     char *path = cred_store_file_path();
     EXPECT(path != NULL);
     if (path) {
-        struct stat file_stat;
-        EXPECT(stat(path, &file_stat) == 0);
-        EXPECT((file_stat.st_mode & 0777) == 0600);
+        t_expect_private_file(path);
         free(path);
     }
 }
@@ -226,7 +225,7 @@ static void test_take_returns_removed_entry(void)
     EXPECT(cred_store_get("codex") == NULL);
 }
 
-static void test_symlink_aliases_share_transaction_lock(void)
+static void test_symlink_aliases_share_transaction_lock(const char *program)
 {
     scratch_state_home();
     json_t *entry = json_pack("{s:i}", "count", 0);
@@ -234,45 +233,41 @@ static void test_symlink_aliases_share_transaction_lock(void)
     json_decref(entry);
     char *destination = cred_store_file_path();
     const char *homes[] = {t_tempdir(), t_tempdir()};
-    pid_t children[2] = {-1, -1};
+    struct t_process *children[2] = {0};
     enum { UPDATES = 64 };
 
     for (size_t i = 0; i < 2; i++) {
         char *directory = xasprintf("%s/hax", homes[i]);
         EXPECT(fs_mkdir_p(directory) == 0);
         char *alias = xasprintf("%s/auth.json", directory);
-        EXPECT(symlink(destination, alias) == 0);
+        int result = t_symlink(destination, alias, 0);
+        int error = errno;
         free(alias);
         free(directory);
-
-        children[i] = fork();
-        EXPECT(children[i] >= 0);
-        if (children[i] == 0) {
-            if (setenv("XDG_STATE_HOME", homes[i], 1) != 0)
-                _exit(1);
-            for (int update = 0; update < UPDATES; update++) {
-                if (cred_store_update("codex", bump_counter, NULL) != 1)
-                    _exit(1);
-            }
-            _exit(0);
+        if (result < 0) {
+            free(destination);
+            if (error == EPERM)
+                T_SKIP("symlink creation requires Developer Mode or symlink privilege");
+            FAIL("cannot create credential alias: %s", strerror(error));
+            return;
         }
     }
     for (size_t i = 0; i < 2; i++) {
-        if (children[i] < 0)
+        const char *child_argv[] = {program, "--update-child", homes[i], NULL};
+        children[i] = t_process_start(child_argv);
+        EXPECT(children[i] != NULL);
+    }
+    for (size_t i = 0; i < 2; i++) {
+        if (!children[i])
             continue;
-        int status = 0;
-        pid_t waited;
-        do {
-            waited = waitpid(children[i], &status, 0);
-        } while (waited < 0 && errno == EINTR);
-        EXPECT(waited == children[i] && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        EXPECT(t_process_wait(children[i], 15000) == 0);
+        t_process_close(children[i]);
 
         char *alias_lock = xasprintf("%s/hax/auth.json.lock", homes[i]);
-        struct stat st;
-        EXPECT(lstat(alias_lock, &st) == -1 && errno == ENOENT);
+        EXPECT(fs_entry_exists(alias_lock) == 0);
         free(alias_lock);
         char *alias = xasprintf("%s/hax/auth.json", homes[i]);
-        EXPECT(lstat(alias, &st) == 0 && S_ISLNK(st.st_mode));
+        EXPECT(t_file_is_symlink(alias));
         free(alias);
     }
     json_t *loaded = cred_store_get("codex");
@@ -282,9 +277,19 @@ static void test_symlink_aliases_share_transaction_lock(void)
     free(destination);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
-    test_symlink_aliases_share_transaction_lock();
+    if (argc == 3 && strcmp(argv[1], "--update-child") == 0) {
+        t_env_set("XDG_STATE_HOME", argv[2]);
+        for (int update = 0; update < 64; update++)
+            EXPECT(cred_store_update("codex", bump_counter, NULL) == 1);
+        T_REPORT();
+    }
+    char *program = t_program_path(argv[0]);
+    EXPECT(program != NULL);
+    if (program)
+        test_symlink_aliases_share_transaction_lock(program);
+    free(program);
     test_missing_store();
     test_set_get_delete_roundtrip();
     test_store_mode_0600();

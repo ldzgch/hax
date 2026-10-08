@@ -1,12 +1,19 @@
 /* SPDX-License-Identifier: MIT */
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 
 #include "agent.h"
 #include "agent_core.h"
 #include "config.h"
+#include "env.h"
+#include "files.h"
 #include "harness.h"
 #include "provider.h"
 #include "slash.h"
@@ -15,6 +22,7 @@
 #include "render/render_ctx.h"
 #include "terminal/input_core.h"
 #include "text/completion.h"
+#include "text/width.h"
 
 /* Link-only tool stubs; slash tests never invoke them. */
 static char *stub_run(const char *args, struct tool_run_ctx *ctx)
@@ -160,7 +168,7 @@ static char *capture_stdout(void (*body)(void *), void *user)
     int saved_fd = dup(STDOUT_FILENO);
     EXPECT(saved_fd >= 0);
 
-    FILE *capture = tmpfile();
+    FILE *capture = t_tmpfile();
     EXPECT(capture != NULL);
     int capture_fd = fileno(capture);
     EXPECT(dup2(capture_fd, STDOUT_FILENO) >= 0);
@@ -331,7 +339,12 @@ static void expect_rows_fit(const char *out, size_t max_cells)
     while (*row) {
         const char *end = strchr(row, '\n');
         size_t row_len = end ? (size_t)(end - row) : strlen(row);
-        if (row_len > max_cells)
+        char *text = xmalloc(row_len + 1);
+        memcpy(text, row, row_len);
+        text[row_len] = '\0';
+        size_t cells = display_cells(text);
+        free(text);
+        if (cells > max_cells)
             FAIL("row exceeds %zu cells: %.*s", max_cells, (int)row_len, row);
         if (!end)
             break;
@@ -346,9 +359,9 @@ static void test_help_wraps_to_narrow_width(void)
     struct agent_state state = {.render = &r};
     struct dispatch_call c = {.line = "/help", .state = &state};
 
-    setenv("HAX_DISPLAY_WIDTH", "30", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "30");
     char *raw = capture_stdout(do_dispatch, &c);
-    unsetenv("HAX_DISPLAY_WIDTH");
+    t_env_unset("HAX_DISPLAY_WIDTH");
     EXPECT(c.result == SLASH_HANDLED);
 
     char *out = strip_sgr(raw);
@@ -458,9 +471,9 @@ static void test_session_shows_window_before_first_request(void)
     struct agent_state state = {.render = &r};
     struct dispatch_call c = {.line = "/session", .state = &state};
 
-    setenv("HAX_CONTEXT_LIMIT", "262144", 1);
+    t_env_set("HAX_CONTEXT_LIMIT", "262144");
     char *out = capture_stdout(do_dispatch, &c);
-    unsetenv("HAX_CONTEXT_LIMIT");
+    t_env_unset("HAX_CONTEXT_LIMIT");
     EXPECT(c.result == SLASH_HANDLED);
     EXPECT(strstr(out, "context") != NULL);
     EXPECT(strstr(out, "? / 262k") != NULL);
@@ -518,9 +531,9 @@ static void test_session_wraps_to_narrow_width(void)
     struct agent_state state = {.session = &s, .render = &r};
     struct dispatch_call c = {.line = "/session", .state = &state};
 
-    setenv("HAX_DISPLAY_WIDTH", "30", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "30");
     char *raw = capture_stdout(do_dispatch, &c);
-    unsetenv("HAX_DISPLAY_WIDTH");
+    t_env_unset("HAX_DISPLAY_WIDTH");
     EXPECT(c.result == SLASH_HANDLED);
 
     char *out = strip_sgr(raw);
@@ -993,6 +1006,8 @@ int main(void)
     unsetenv("HAX_DISPLAY_WIDTH");
     unsetenv("HAX_CONTEXT_LIMIT");
     slash_completer_init(&slash_completer, &completion_state);
+    t_env_unset("HAX_DISPLAY_WIDTH");
+    t_env_unset("HAX_CONTEXT_LIMIT");
 
     test_dispatch_not_a_command();
     test_dispatch_unknown();

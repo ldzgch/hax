@@ -5,14 +5,21 @@
 #include <signal.h>
 #include <stdio.h>
 
+#ifndef _WIN32
+#include <sys/types.h>
+
 struct spawn_signal_state {
     struct sigaction sigint;
     struct sigaction sigquit;
     struct sigaction sigpipe;
 };
+#endif
 
-/* Run `shell_cmd` via /bin/sh and return its waitpid status, or -1 on error. */
+/* Run shell_cmd using /bin/sh (Git Bash on Windows). Return a platform process status, or -1
+ * on error. Use spawn_status_success() to check success without decoding native wait statuses. */
 int spawn_shell_wait(const char *shell_cmd);
+
+int spawn_status_success(int status);
 
 /* Prepare a trusted `sh -c` command for a child that must decode what hax renders, by supplying an
  * LC_CTYPE the environment does not. Takes ownership and returns an allocated command, or the
@@ -20,10 +27,9 @@ int spawn_shell_wait(const char *shell_cmd);
  * user's to pin. */
 char *spawn_shell_cmd_force_utf8(char *shell_cmd);
 
-/* Fire-and-forget: run `argv` directly, detached and with stdio redirected to /dev/null. The
- * child is reparented to init, so it is never waited on or killed and may outlive the caller.
- * Returns 0 when the detached child was spawned — which says nothing about the exec or the
- * program succeeding — and -1 when forking failed. */
+/* Fire-and-forget: run argv directly, detached and with stdio redirected to the null device.
+ * The child may outlive the caller and is never waited on or killed by hax. Returns 0 when
+ * launched (not necessarily when the program succeeds), or -1 when launching fails. */
 int spawn_detached(const char *const *argv);
 
 /* Run `argv` directly, with stdin and stderr redirected to /dev/null, and capture stdout.
@@ -37,6 +43,7 @@ char *spawn_capture_stdout(const char *const *argv, size_t max_bytes, int timeou
 /* Ignore terminal signals in the parent while a child runs. The child must reset them before
  * exec, and the parent must restore `state` after waiting. This follows system() semantics for
  * SIGINT and SIGQUIT; SIGPIPE also protects parent writes to a child that exits early. */
+#ifndef _WIN32
 void spawn_parent_ignore_signals(struct spawn_signal_state *state);
 void spawn_parent_restore_signals(const struct spawn_signal_state *state);
 void spawn_child_reset_signals(void);
@@ -66,11 +73,16 @@ int spawn_wait_child_timeout(pid_t pid, int timeout_ms);
 /* Reap an exited child and return 1; return 0 if it is running or waitpid otherwise fails.
  * ECHILD counts as exited. */
 int spawn_reap_if_exited(pid_t pid);
+#endif
 
 struct spawn_pipe {
     FILE *stream;
+#ifdef _WIN32
+    struct win_process *process;
+#else
     pid_t pid;
     struct spawn_signal_state parent_signals;
+#endif
 };
 
 /* Open a pipe to a shell command. The write variant connects `stream` to the child's stdin; the
@@ -79,8 +91,8 @@ struct spawn_pipe {
 int spawn_pipe_open_write(struct spawn_pipe *pipe, const char *shell_cmd);
 int spawn_pipe_open_read(struct spawn_pipe *pipe, const char *shell_cmd);
 
-/* Close the stream, wait for the child, restore parent signals, and return waitpid status. A NULL
- * or zeroed pipe is a successful no-op. */
+/* Close the stream, wait for the child, restore parent signals where applicable, and return a
+ * platform process status. A NULL or zeroed pipe is a successful no-op. */
 int spawn_pipe_close(struct spawn_pipe *pipe);
 
 #endif /* HAX_SYSTEM_SPAWN_H */

@@ -3,7 +3,6 @@
 #define HAX_TERMINAL_INPUT_CORE_H
 
 #include <stddef.h>
-#include <termios.h>
 
 /* Shared editor state and terminal-independent operations. */
 
@@ -58,7 +57,7 @@ struct input {
     int terminal_rows; /* 0 disables viewport clipping */
 
     /* Terminal state */
-    struct termios saved_termios;
+    struct tty_mode *terminal_mode; /* owned while raw_active */
     int raw_active;
 
     char *persist_path; /* owned; NULL disables persistence */

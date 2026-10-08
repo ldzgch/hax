@@ -9,7 +9,9 @@
 #include <sys/types.h>
 /* The wait macros are provided by <sys/wait.h> per POSIX; glibc also leaks
  * them through <stdlib.h>, so the include cleaner cannot attribute them. */
+#ifndef _WIN32
 #include <sys/wait.h> // IWYU pragma: keep
+#endif
 
 #include "buf.h"
 #include "xalloc.h"
@@ -188,8 +190,9 @@ int bash_read_head_slice(int fd, off_t range_start, size_t cap_bytes, size_t cap
     char chunk[8192];
     while (out->len < bytes_to_read) {
         size_t remaining = bytes_to_read - out->len;
-        ssize_t bytes_read = pread(fd, chunk, remaining < sizeof(chunk) ? remaining : sizeof(chunk),
-                                   range_start + (off_t)out->len);
+        ssize_t bytes_read =
+            fd_read_at(fd, chunk, remaining < sizeof(chunk) ? remaining : sizeof(chunk),
+                       range_start + (off_t)out->len);
         if (bytes_read < 0) {
             if (errno == EINTR)
                 continue;
@@ -242,7 +245,7 @@ int bash_read_tail_slice(int fd, off_t range_start, size_t range_bytes, size_t c
         char previous_byte;
         ssize_t read_result;
         do {
-            read_result = pread(fd, &previous_byte, 1, start - 1);
+            read_result = fd_read_at(fd, &previous_byte, 1, start - 1);
         } while (read_result < 0 && errno == EINTR);
         /* On read failure, fall back to the conservative behavior of
          * trimming through the first '\n'. We'd rather lose one line
@@ -253,8 +256,9 @@ int bash_read_tail_slice(int fd, off_t range_start, size_t range_bytes, size_t c
     char chunk[8192];
     while (out->len < bytes_to_read) {
         size_t remaining = bytes_to_read - out->len;
-        ssize_t bytes_read = pread(fd, chunk, remaining < sizeof(chunk) ? remaining : sizeof(chunk),
-                                   start + (off_t)out->len);
+        ssize_t bytes_read =
+            fd_read_at(fd, chunk, remaining < sizeof(chunk) ? remaining : sizeof(chunk),
+                       start + (off_t)out->len);
         if (bytes_read < 0) {
             if (errno == EINTR)
                 continue;
@@ -316,6 +320,13 @@ static void append_status(struct buf *out, enum bash_stop_reason reason, long ti
         buf_append_str(out, footer);
         return;
     }
+#ifdef _WIN32
+    if (wait_status != 0) {
+        char footer[64];
+        snprintf(footer, sizeof(footer), "\n[exit %u]", (unsigned)wait_status);
+        buf_append_str(out, footer);
+    }
+#else
     if (WIFEXITED(wait_status)) {
         int code = WEXITSTATUS(wait_status);
         if (code != 0) {
@@ -328,6 +339,7 @@ static void append_status(struct buf *out, enum bash_stop_reason reason, long ti
         snprintf(footer, sizeof(footer), "\n[signal %d]", WTERMSIG(wait_status));
         buf_append_str(out, footer);
     }
+#endif
     if (reason == BASH_STOP_ORPHANED) {
         char formatted_timeout[32];
         format_timeout_for_model(formatted_timeout, sizeof(formatted_timeout), timeout_ms);

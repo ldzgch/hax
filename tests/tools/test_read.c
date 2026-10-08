@@ -9,17 +9,21 @@
 #include <sys/stat.h>
 
 #include "buf.h"
+#include "env.h"
+#include "files.h"
 #include "harness.h"
+#include "pipe.h"
 #include "tool.h"
 #include "xalloc.h"
 #include "system/fd.h"
+#include "system/fs.h"
 #include "tools/output_cap.h"
 
 static char *create_temp_file(const void *data, size_t len)
 {
     char *dir = t_tempdir();
     char *path = xasprintf("%s/input", dir);
-    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    int fd = fs_open_private(path, 1);
     if (fd < 0) {
         FAIL("creating %s: %s", path, strerror(errno));
         free(path);
@@ -74,6 +78,21 @@ static void test_read_normal(void)
     free(out);
     free(args);
     unlink(path);
+    free(path);
+}
+
+static void test_read_unicode_path_preserves_bytes(void)
+{
+    char *path = xasprintf("%s/\xe6\x96\x87-\xc3\xa9.txt", t_tempdir());
+    const char content[] = "alpha\r\nbravo\x1a\n";
+    EXPECT(fs_write_atomic(path, content, sizeof(content) - 1, 0) == 0);
+    json_t *arguments = json_pack("{s:s}", "path", path);
+    char *args = json_dumps(arguments, JSON_COMPACT);
+    json_decref(arguments);
+    char *out = call_read(args);
+    EXPECT_STR_EQ(out, "     1" READ_LINE_DELIM "alpha\r\n     2" READ_LINE_DELIM "bravo\x1a\n");
+    free(out);
+    free(args);
     free(path);
 }
 
@@ -495,20 +514,19 @@ static void test_read_past_eof_counts_trailing_line_in_skip_mode(void)
 
 static void test_read_refuses_special_file(void)
 {
-    /* Opening a FIFO without a writer could block indefinitely. */
-    char path[] = "/tmp/hax-test-fifo-XXXXXX";
-    int fd = mkstemp(path);
-    EXPECT(fd >= 0);
-    close(fd);
-    unlink(path);
-    EXPECT(mkfifo(path, 0644) == 0);
-
-    char *args = xasprintf("{\"path\":\"%s\"}", path);
+    struct t_pipe *pipe = t_pipe_create();
+    EXPECT(pipe != NULL);
+    if (!pipe)
+        return;
+    json_t *arguments = json_pack("{s:s}", "path", t_pipe_path(pipe));
+    char *args = json_dumps(arguments, JSON_COMPACT);
+    json_decref(arguments);
     char *out = call_read(args);
     EXPECT(strstr(out, "not a regular file") != NULL);
     free(out);
     free(args);
-    unlink(path);
+    EXPECT(t_pipe_exists(pipe));
+    t_pipe_close(pipe);
 }
 
 static void test_read_bounded_slice_suppresses_truncation_marker(void)
@@ -777,13 +795,14 @@ int main(void)
     /* The byte cap is the env-tunable knob; pin it to 256K so the tests
      * below (most of which use multi-100K fixtures) exercise the code
      * path the assertions describe regardless of the compiled-in default. */
-    setenv("HAX_TOOL_OUTPUT_CAP", "256k", 1);
+    t_env_set("HAX_TOOL_OUTPUT_CAP", "256k");
 
     test_read_invalid_json();
     test_read_missing_path();
     test_read_empty_path();
     test_read_nonexistent();
     test_read_normal();
+    test_read_unicode_path_preserves_bytes();
     test_read_sanitizes_utf8();
     test_read_refuses_binary();
     test_read_refuses_oversize_no_slice();

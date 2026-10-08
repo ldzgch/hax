@@ -13,6 +13,7 @@
 #include "diag.h"
 #include "xalloc.h"
 #include "system/clock.h"
+#include "system/fs.h"
 
 static pthread_mutex_t trace_mu = PTHREAD_MUTEX_INITIALIZER;
 static FILE *trace_fp;
@@ -66,12 +67,16 @@ void trace_init(void)
     const char *path = config_str("trace");
     if (!path || !*path)
         goto out_unlock;
-    trace_fp = fopen(path, "we");
+    trace_fp = fs_fopen_write(path);
     if (!trace_fp) {
         hax_warn("HAX_TRACE: cannot open '%s' for writing", path);
         goto out_unlock;
     }
+#ifdef _WIN32
+    setvbuf(trace_fp, NULL, _IONBF, 0);
+#else
     setvbuf(trace_fp, NULL, _IOLBF, 0);
+#endif
     atexit(trace_close_atexit);
 
 out_unlock:

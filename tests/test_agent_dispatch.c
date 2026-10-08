@@ -101,16 +101,24 @@ int md_in_table(const struct md_renderer *m)
 
 static char captured[131072];
 
+static void cap_close(void)
+{
+    fclose(stdout);
+}
+
 static void cap_init(void)
 {
     locale_init_utf8();
-    char path[64];
-    snprintf(path, sizeof(path), "/tmp/haxdispatch.%d.out", (int)getpid());
+    char *path = xasprintf("%s/dispatch.out", t_tempdir());
     if (!freopen(path, "w+", stdout)) {
         perror("freopen");
         exit(1);
     }
+#ifndef _WIN32
     unlink(path);
+#endif
+    free(path);
+    atexit(cap_close);
 }
 
 static void cap_reset(void)

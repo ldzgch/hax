@@ -400,11 +400,15 @@ static int start_run(struct oneshot_state *state, const char *prompt,
      * default. */
     interrupt_install_fatal_signal_handlers();
     interrupt_set_fatal_signal_hook(bash_shell_pgids_kill);
+#ifndef _WIN32
     signal(SIGUSR1, SIG_IGN);
+#endif
     /* A vanished stdout consumer must surface as a checked write error, not as SIGPIPE death,
      * which would skip killing spawned process groups and task cleanup. Tool children reset
      * to the default disposition before exec. */
+#ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
+#endif
 
     /* Effort must reflect the completed startup probe before session initialization. */
     model_meta_wait(provider);
@@ -599,7 +603,9 @@ int oneshot_run(struct provider *provider, const char *prompt, const struct hax_
         run_user_turn(&state, prompt, max_turns, &loop_result);
     }
     interrupt_install_fatal_signal_handlers();
+#ifndef _WIN32
     signal(SIGUSR1, SIG_IGN);
+#endif
 
     int result = finish_run(&state, &loop_result, max_turns);
     agent_loop_result_destroy(&loop_result);

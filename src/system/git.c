@@ -1,14 +1,12 @@
 /* SPDX-License-Identifier: MIT */
 #include "system/git.h"
 
-#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/stat.h>
 
 #include "xalloc.h"
+#include "system/fs.h"
 #include "system/path.h"
 #include "system/spawn.h"
 
@@ -41,10 +39,11 @@ static int may_be_in_repository(void)
 {
     if (getenv("GIT_DIR"))
         return 1;
-    char cwd[PATH_MAX];
-    if (!getcwd(cwd, sizeof(cwd)))
+    char *cwd = path_cwd();
+    if (!cwd)
         return 1;
     char *root = git_find_worktree_root(cwd);
+    free(cwd);
     int found = root != NULL;
     free(root);
     return found;
@@ -85,17 +84,15 @@ void git_state_free(struct git_state *state)
 
 char *git_find_worktree_root(const char *dir)
 {
-    char candidate[PATH_MAX];
-    snprintf(candidate, sizeof(candidate), "%s", dir);
+    char *candidate = xstrdup(dir);
     /* Unbounded: each step drops a path component, so the search ends at the root. */
     do {
-        char marker[PATH_MAX + 16];
-        snprintf(marker, sizeof(marker), "%s/.git", candidate);
-        /* lstat: only the entry's presence matters, and following a symlink could stall on
-         * whatever mount it points into. */
-        struct stat marker_stat;
-        if (lstat(marker, &marker_stat) == 0)
-            return xstrdup(candidate);
+        char *marker = path_join(candidate, ".git");
+        int exists = fs_entry_exists(marker);
+        free(marker);
+        if (exists == 1)
+            return candidate;
     } while (path_climb_to_parent(candidate));
+    free(candidate);
     return NULL;
 }

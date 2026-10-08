@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include "env.h"
 #include "harness.h"
 #include "xalloc.h"
 #include "system/path.h"
@@ -52,7 +53,7 @@ static void test_rewrites_descendant_path(void)
 
 static void test_expands_home_before_rewriting(void)
 {
-    setenv("HOME", test_cwd, 1);
+    t_env_set("HOME", test_cwd);
     json_t *args = load_rewritten_args("{\"path\":\"~/src/file.c\"}");
     if (!args)
         return;

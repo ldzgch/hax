@@ -77,6 +77,9 @@ def hermetic_env(home: Path) -> dict[str, str]:
         if not key.startswith("HAX_") and not key.startswith("XDG_")
     }
     env["HOME"] = str(home)
+    env["XDG_CONFIG_HOME"] = str(home / ".config")
+    env["XDG_STATE_HOME"] = str(home / ".local" / "state")
+    env["XDG_CACHE_HOME"] = str(home / ".cache")
     # Never fork real power-management helpers (caffeinate / systemd-inhibit).
     env["HAX_KEEP_AWAKE"] = "0"
     return env
@@ -93,7 +96,8 @@ def make_home() -> tuple[Path, Path]:
 def hax_binary() -> Path:
     # Resolve before any cwd switch so a relative HAX_BIN keeps meaning what
     # the caller wrote.
-    return Path(os.environ.get("HAX_BIN", str(REPO_ROOT / "build" / "hax"))).resolve()
+    name = "hax.exe" if os.name == "nt" else "hax"
+    return Path(os.environ.get("HAX_BIN", str(REPO_ROOT / "build" / name))).resolve()
 
 
 def mock_env(home: Path, mock_script: str, extra_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -101,7 +105,7 @@ def mock_env(home: Path, mock_script: str, extra_env: dict[str, str] | None = No
     like an expected screen block; docs/debugging.md describes its directives."""
     # One file per run: the provider rereads its script on every request, and runs may share home.
     fd, script_path = tempfile.mkstemp(prefix="mock-", suffix=".txt", dir=home)
-    with os.fdopen(fd, "w") as script:
+    with os.fdopen(fd, "w", encoding="utf-8") as script:
         script.write(textwrap.dedent(mock_script))
     env = hermetic_env(home)
     env["HAX_PROVIDER"] = "mock"

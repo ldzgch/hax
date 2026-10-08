@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT */
+#include <errno.h>
 #include <jansson.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,7 +7,10 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "env.h"
+#include "files.h"
 #include "harness.h"
+#include "pipe.h"
 #include "provider.h"
 #include "session.h"
 #include "xalloc.h"
@@ -197,8 +201,8 @@ static void free_items(struct item *items, size_t n)
 
 static void use_fresh_session_state(void)
 {
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
-    unsetenv("HAX_NO_SESSION");
+    t_env_set("XDG_STATE_HOME", t_tempdir());
+    t_env_unset("HAX_NO_SESSION");
 }
 
 static char *write_session(const char *provider, const char *model, const char *effort,
@@ -226,14 +230,14 @@ static void test_recording_control(void)
 
     /* Explicit opt-out must avoid even opening a log; "auto" is resolved by
      * the agent and remains recordable at this lower layer. */
-    setenv("HAX_NO_SESSION", "1", 1);
+    t_env_set("HAX_NO_SESSION", "1");
     EXPECT(session_log_open("alpha", "m1", NULL, "high", NULL) == NULL);
 
-    setenv("HAX_NO_SESSION", "auto", 1);
+    t_env_set("HAX_NO_SESSION", "auto");
     struct session_log *log = session_log_open("alpha", "m1", NULL, "high", NULL);
     EXPECT(log != NULL);
     session_log_close(log);
-    unsetenv("HAX_NO_SESSION");
+    t_env_unset("HAX_NO_SESSION");
 }
 
 static void test_session_round_trip(void)
@@ -351,6 +355,16 @@ static void test_prompt_history_path_shares_session_directory(void)
     if (!history_path || !elsewhere)
         return;
     EXPECT(strcmp(history_path, elsewhere) != 0);
+#ifdef _WIN32
+    char *forward_cwd = xstrdup(cwd);
+    for (char *cursor = forward_cwd; *cursor; cursor++)
+        if (*cursor == '\\')
+            *cursor = '/';
+    char *forward_history = session_prompt_history_path(forward_cwd);
+    EXPECT_STR_EQ(forward_history, history_path);
+    free(forward_history);
+    free(forward_cwd);
+#endif
 
     const char *session_basename = strrchr(session_path, '/');
     size_t directory_len = session_basename ? (size_t)(session_basename - session_path) : 0;
@@ -381,9 +395,7 @@ static void test_session_file_permissions(void)
     use_fresh_session_state();
     char *path = write_session("alpha", "m1", NULL, NULL, CONVERSATION, CONVERSATION_COUNT);
 
-    struct stat st;
-    EXPECT(stat(path, &st) == 0);
-    EXPECT((st.st_mode & 0077) == 0);
+    t_expect_private_file(path);
 
     free(path);
 }
@@ -506,11 +518,13 @@ static void test_label_prefers_recorded_model_label(void)
 
 static void test_resume_repairs_torn_final_line(void)
 {
-    char path[] = "/tmp/hax_torn_XXXXXX";
-    int fd = mkstemp(path);
+    char *path = xasprintf("%s/session.jsonl", t_tempdir());
+    int fd = fs_open_private(path, 1);
     EXPECT(fd >= 0);
-    if (fd < 0)
+    if (fd < 0) {
+        free(path);
         return;
+    }
 
     const char *torn = "{\"type\":\"session\",\"version\":1,\"provider\":\"pa\",\"model\":\"ma\"}\n"
                        "{\"kind\":\"turn_boundary\"}\n"
@@ -542,6 +556,7 @@ static void test_resume_repairs_torn_final_line(void)
         EXPECT_STR_EQ(after[3].text, "after crash");
     free_items(after, after_n);
     unlink(path);
+    free(path);
 }
 
 static void test_load_trims_dangling_tool_call(void)
@@ -959,13 +974,19 @@ static void test_read_meta_failure_initializes_output(void)
     EXPECT(meta.provider == NULL && meta.id == NULL);
 }
 
-static void test_session_readers_reject_fifo(void)
+static void test_session_readers_reject_pipe(void)
 {
-    char *path = xasprintf("%s/session.jsonl", t_tempdir());
-    EXPECT(mkfifo(path, 0600) == 0);
+    struct t_pipe *pipe = t_pipe_create();
+    EXPECT(pipe != NULL);
+    if (!pipe)
+        return;
+    const char *path = t_pipe_path(pipe);
 
     struct session_meta meta;
     EXPECT(session_read_meta(path, &meta) == -1);
+#ifdef _WIN32
+    EXPECT(errno == EINVAL);
+#endif
     EXPECT(meta.provider == NULL && meta.id == NULL);
 
     struct item *items = (struct item *)1;
@@ -974,17 +995,19 @@ static void test_session_readers_reject_fifo(void)
     EXPECT(items == NULL);
     EXPECT(count == 0);
 
-    unlink(path);
-    free(path);
+    EXPECT(t_pipe_exists(pipe));
+    t_pipe_close(pipe);
 }
 
 static void test_load_enforces_image_count_cap(void)
 {
-    char path[] = "/tmp/hax_imgcap_XXXXXX";
-    int fd = mkstemp(path);
+    char *path = xasprintf("%s/session.jsonl", t_tempdir());
+    int fd = fs_open_private(path, 1);
     EXPECT(fd >= 0);
-    if (fd < 0)
+    if (fd < 0) {
+        free(path);
         return;
+    }
 
     const char *header =
         "{\"type\":\"session\",\"version\":1,\"provider\":\"pa\",\"model\":\"ma\"}\n";
@@ -1014,16 +1037,19 @@ static void test_load_enforces_image_count_cap(void)
 
     free_items(items, n);
     unlink(path);
+    free(path);
 }
 
 /* A summarized prefix is never sent, so its images must not spend the window's image budget. */
 static void test_load_budgets_images_from_compaction_seed(void)
 {
-    char path[] = "/tmp/hax_imgfloor_XXXXXX";
-    int fd = mkstemp(path);
+    char *path = xasprintf("%s/session.jsonl", t_tempdir());
+    int fd = fs_open_private(path, 1);
     EXPECT(fd >= 0);
-    if (fd < 0)
+    if (fd < 0) {
+        free(path);
         return;
+    }
 
     const char *header =
         "{\"type\":\"session\",\"version\":1,\"provider\":\"pa\",\"model\":\"ma\"}\n";
@@ -1051,6 +1077,7 @@ static void test_load_budgets_images_from_compaction_seed(void)
 
     free_items(items, n);
     unlink(path);
+    free(path);
 }
 
 int main(void)
@@ -1082,7 +1109,7 @@ int main(void)
     test_discarded_selection_stays_out_of_log();
     test_undo_keeps_effective_selection();
     test_read_meta_failure_initializes_output();
-    test_session_readers_reject_fifo();
+    test_session_readers_reject_pipe();
     test_load_enforces_image_count_cap();
     test_load_budgets_images_from_compaction_seed();
     T_REPORT();

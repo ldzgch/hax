@@ -542,10 +542,13 @@ static void *spinner_thread(void *arg)
 {
     struct spinner *spinner = arg;
 
+#ifndef _WIN32
     /* Keep process signals on threads that own the foreground operation and terminal state. */
     sigset_t mask;
     sigfillset(&mask);
     pthread_sigmask(SIG_SETMASK, &mask, NULL);
+
+#endif
 
     pthread_mutex_lock(&spinner->mutex);
     while (!spinner->stop_requested) {

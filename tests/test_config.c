@@ -9,9 +9,12 @@
 
 #include "config.h"
 #include "diag.h"
+#include "env.h"
+#include "files.h"
 #include "harness.h"
 #include "xalloc.h"
 #include "system/fs.h"
+#include "system/path.h"
 
 /* Isolate resolution tests from the developer or CI environment. */
 static void clear_env(void)
@@ -19,7 +22,7 @@ static void clear_env(void)
     size_t count = 0;
     const struct config_setting *settings = config_settings(&count);
     for (size_t i = 0; i < count; i++)
-        unsetenv(settings[i].env_var);
+        t_env_unset(settings[i].env_var);
 }
 
 /* Write a config fixture for tests that exercise the file-backed API. */
@@ -98,9 +101,9 @@ static void test_registry_default(void)
     EXPECT(config_load("{\"providers\": {\"llamacpp\": {\"port\": \"9090\"}}}") == 0);
     EXPECT_STR_EQ(config_str("providers.llamacpp.port"), "9090");
     /* Env overrides both. */
-    setenv("HAX_LLAMACPP_PORT", "7070", 1);
+    t_env_set("HAX_LLAMACPP_PORT", "7070");
     EXPECT_STR_EQ(config_str("providers.llamacpp.port"), "7070");
-    unsetenv("HAX_LLAMACPP_PORT");
+    t_env_unset("HAX_LLAMACPP_PORT");
 }
 
 static void test_default_on_unset_and_invalid(void)
@@ -182,13 +185,13 @@ static void test_env_wins_over_file(void)
     clear_env();
     config_load("{\"model\": \"from-file\"}");
     EXPECT_STR_EQ(config_str("model"), "from-file");
-    setenv("HAX_MODEL", "from-env", 1);
+    t_env_set("HAX_MODEL", "from-env");
     EXPECT_STR_EQ(config_str("model"), "from-env");
     /* Empty env is returned verbatim (so "" can mean "omit"). */
-    setenv("HAX_MODEL", "", 1);
+    t_env_set("HAX_MODEL", "");
     const char *e = config_str("model");
     EXPECT(e != NULL && *e == '\0');
-    unsetenv("HAX_MODEL");
+    t_env_unset("HAX_MODEL");
     EXPECT_STR_EQ(config_str("model"), "from-file");
 }
 
@@ -200,9 +203,9 @@ static void test_empty_means_unset(void)
      * tier rather than shadowing it (or reading as a blank port). */
     EXPECT(config_load("{\"providers.llamacpp.port\": \"9090\", \"bash\": {\"timeout\": \"5s\"},"
                        " \"show_reasoning\": true}") == 0);
-    setenv("HAX_LLAMACPP_PORT", "", 1);
-    setenv("HAX_BASH_TIMEOUT", "", 1);
-    setenv("HAX_SHOW_REASONING", "", 1);
+    t_env_set("HAX_LLAMACPP_PORT", "");
+    t_env_set("HAX_BASH_TIMEOUT", "");
+    t_env_set("HAX_SHOW_REASONING", "");
     EXPECT_STR_EQ(config_str_nonempty("providers.llamacpp.port"), "9090");
     EXPECT(config_duration_ms("bash.timeout") == 5 * 1000);
     EXPECT(config_bool("show_reasoning") == 1);
@@ -216,7 +219,7 @@ static void test_empty_means_unset(void)
      * than a blank string. */
     EXPECT_STR_EQ(config_str("providers.llamacpp.port"), "8080");
     /* A setting that documents a meaning for empty keeps it verbatim. */
-    setenv("HAX_SYSTEM_PROMPT", "", 1);
+    t_env_set("HAX_SYSTEM_PROMPT", "");
     const char *sp = config_str("system_prompt");
     EXPECT(sp != NULL && *sp == '\0');
     clear_env();
@@ -226,7 +229,7 @@ static void test_override_beats_env(void)
 {
     clear_env();
     config_load("{\"model\": \"from-file\"}");
-    setenv("HAX_MODEL", "from-env", 1);
+    t_env_set("HAX_MODEL", "from-env");
     /* A runtime override is the highest tier — it beats even an env var,
      * so a setting launched via env can still be changed at runtime. */
     config_set_override("model", "from-override");
@@ -234,7 +237,7 @@ static void test_override_beats_env(void)
     /* Clearing the override falls back to env. */
     config_set_override("model", NULL);
     EXPECT_STR_EQ(config_str("model"), "from-env");
-    unsetenv("HAX_MODEL");
+    t_env_unset("HAX_MODEL");
 }
 
 static void test_state_tier_ordering(void)
@@ -247,12 +250,12 @@ static void test_state_tier_ordering(void)
     EXPECT(config_load("{\"model\": \"from-file\"}") == 0);
     EXPECT(config_load_state("{\"model\": \"from-state\"}") == 0);
     EXPECT_STR_EQ(config_str("model"), "from-state"); /* beats the file */
-    setenv("HAX_MODEL", "from-env", 1);
+    t_env_set("HAX_MODEL", "from-env");
     EXPECT_STR_EQ(config_str("model"), "from-env"); /* env still wins */
     config_set_override("model", "from-override");
     EXPECT_STR_EQ(config_str("model"), "from-override"); /* override is top */
     config_set_override("model", NULL);
-    unsetenv("HAX_MODEL");
+    t_env_unset("HAX_MODEL");
     EXPECT_STR_EQ(config_str("model"), "from-state");
     /* Same nested/flat grammar as the file tier. */
     EXPECT(config_load_state("{\"effort\": \"high\"}") == 0);
@@ -271,19 +274,19 @@ static void test_provider_binding_canonical_ids(void)
 
     EXPECT(config_load(NULL) == 0);
     EXPECT(config_load_state("{\"provider\": \"llama.cpp\", \"model\": \"old-model\"}") == 0);
-    setenv("HAX_PROVIDER", "llamacpp", 1);
+    t_env_set("HAX_PROVIDER", "llamacpp");
     EXPECT_STR_EQ(config_str("model"), "old-model");
-    unsetenv("HAX_PROVIDER");
+    t_env_unset("HAX_PROVIDER");
 
     char *dir = t_tempdir();
     if (dir) {
-        setenv("XDG_STATE_HOME", dir, 1);
+        t_env_set("XDG_STATE_HOME", dir);
         /* Selecting the canonical id is not a provider change: the saved model is kept
          * instead of being reset to the new provider's default. */
         EXPECT(config_persist_selection("llamacpp", NULL, NULL) == 0);
         EXPECT_STR_EQ(config_str("provider"), "llamacpp");
         EXPECT_STR_EQ(config_str("model"), "old-model");
-        unsetenv("XDG_STATE_HOME");
+        t_env_unset("XDG_STATE_HOME");
     }
 
     EXPECT(config_load_state(NULL) == 0);
@@ -304,14 +307,14 @@ static void test_provider_binding(void)
 
     /* ... and a one-off HAX_PROVIDER skips them: resolution falls through to
      * the (unbound) file tier / registry default instead. */
-    setenv("HAX_PROVIDER", "mock", 1);
+    t_env_set("HAX_PROVIDER", "mock");
     EXPECT_STR_EQ(config_str("model"), "from-file");
     EXPECT(config_str("effort") == NULL);
     /* An explicit env model is a deliberate pairing and always applies. */
-    setenv("HAX_MODEL", "env-model", 1);
+    t_env_set("HAX_MODEL", "env-model");
     EXPECT_STR_EQ(config_str("model"), "env-model");
-    unsetenv("HAX_MODEL");
-    unsetenv("HAX_PROVIDER");
+    t_env_unset("HAX_MODEL");
+    t_env_unset("HAX_PROVIDER");
     /* Dropping the one-off brings the saved pair back untouched. */
     EXPECT_STR_EQ(config_str("model"), "gpt-x");
 
@@ -321,17 +324,17 @@ static void test_provider_binding(void)
                        " \"effort\": \"high\"}") == 0);
     EXPECT(config_load_state(NULL) == 0);
     EXPECT_STR_EQ(config_str("model"), "gpt-x");
-    setenv("HAX_PROVIDER", "mock", 1);
+    t_env_set("HAX_PROVIDER", "mock");
     EXPECT(config_str("model") == NULL);
     EXPECT(config_str("effort") == NULL);
-    unsetenv("HAX_PROVIDER");
+    t_env_unset("HAX_PROVIDER");
 
     /* A tier that records no provider is unbound: a bare "model" in
      * config.json is a global claim and applies under any provider. */
     EXPECT(config_load("{\"model\": \"global\"}") == 0);
-    setenv("HAX_PROVIDER", "mock", 1);
+    t_env_set("HAX_PROVIDER", "mock");
     EXPECT_STR_EQ(config_str("model"), "global");
-    unsetenv("HAX_PROVIDER");
+    t_env_unset("HAX_PROVIDER");
 
     /* Cross-tier: the active provider resolving from the state tier skips a
      * file-tier model bound to a different file-tier provider. */
@@ -343,9 +346,9 @@ static void test_provider_binding(void)
      * a bound value can't claim whatever gets inferred. */
     EXPECT(config_load(NULL) == 0);
     EXPECT(config_load_state("{\"provider\": \"openai\", \"model\": \"gpt-x\"}") == 0);
-    setenv("HAX_PROVIDER", "", 1);
+    t_env_set("HAX_PROVIDER", "");
     EXPECT(config_str("model") == NULL);
-    unsetenv("HAX_PROVIDER");
+    t_env_unset("HAX_PROVIDER");
 
     config_load(NULL);
     config_load_state(NULL);
@@ -357,8 +360,8 @@ static void test_persist_selection(void)
     config_free();
 
     char *dir = t_tempdir();
-    setenv("XDG_STATE_HOME", dir, 1);
-    setenv("XDG_CONFIG_HOME", dir, 1); /* keep config_init off the real file */
+    t_env_set("XDG_STATE_HOME", dir);
+    t_env_set("XDG_CONFIG_HOME", dir); /* keep config_init off the real file */
 
     /* A full pick lands as one write and reads back. */
     EXPECT(config_persist_selection("codex", "gpt-x", "high") == 0);
@@ -403,7 +406,7 @@ static void test_persist_selection(void)
 
     /* A failed write leaves the in-memory tier unchanged (see
      * test_persist_failure_rolls_back for the same contract per-key). */
-    setenv("XDG_STATE_HOME", "/dev/null/nope", 1);
+    t_env_set("XDG_STATE_HOME", "/dev/null/nope");
     EXPECT(config_persist_selection("other", NULL, NULL) == -1);
     EXPECT_STR_EQ(config_str("provider"), "mock");
 
@@ -411,8 +414,8 @@ static void test_persist_selection(void)
     EXPECT(config_persist_selection(NULL, "gpt-x", NULL) == -1);
     EXPECT(config_persist_selection("", "gpt-x", NULL) == -1);
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
     config_free();
 }
 
@@ -438,17 +441,17 @@ static void test_default_sentinel(void)
     /* An override sentinel sits above env, so it shadows even an env var —
      * this is what stops a stale HAX_MODEL leaking into a switched provider
      * for the session. With the override cleared, env wins again. */
-    setenv("HAX_MODEL", "from-env", 1);
+    t_env_set("HAX_MODEL", "from-env");
     config_set_override("model", CONFIG_VALUE_DEFAULT);
     EXPECT(config_str("model") == NULL);
     config_set_override("model", NULL);
     EXPECT_STR_EQ(config_str("model"), "from-env");
-    unsetenv("HAX_MODEL");
+    t_env_unset("HAX_MODEL");
 
     /* On a key with a registry default the sentinel lands on that default
      * instead of NULL — same shadowing of lower tiers, one definition of
      * the default. */
-    setenv("HAX_LLAMACPP_PORT", "9999", 1);
+    t_env_set("HAX_LLAMACPP_PORT", "9999");
     EXPECT_STR_EQ(config_str("providers.llamacpp.port"), "9999");
     config_set_override("providers.llamacpp.port", CONFIG_VALUE_DEFAULT);
     EXPECT_STR_EQ(config_str("providers.llamacpp.port"), "8080");
@@ -458,7 +461,7 @@ static void test_default_sentinel(void)
     config_set_override("providers.llamacpp.port", "");
     EXPECT_STR_EQ(config_str("providers.llamacpp.port"), "9999");
     config_set_override("providers.llamacpp.port", NULL);
-    unsetenv("HAX_LLAMACPP_PORT");
+    t_env_unset("HAX_LLAMACPP_PORT");
 
     /* A setting that documents a meaning for empty reads it back verbatim. */
     config_set_override("system_prompt", "");
@@ -479,8 +482,8 @@ static void test_persist_state_roundtrip(void)
      * state-tier write lands in the state dir, not the config dir. */
     char *cfg_dir = t_tempdir();
     char *st_dir = t_tempdir();
-    setenv("XDG_CONFIG_HOME", cfg_dir, 1);
-    setenv("XDG_STATE_HOME", st_dir, 1);
+    t_env_set("XDG_CONFIG_HOME", cfg_dir);
+    t_env_set("XDG_STATE_HOME", st_dir);
 
     EXPECT(config_persist_state("provider", "openrouter") == 0);
     EXPECT(config_persist_state("model", "some/model") == 0);
@@ -489,9 +492,8 @@ static void test_persist_state_roundtrip(void)
     char stpath[4096], cfgpath[4096];
     snprintf(stpath, sizeof stpath, "%s/hax/state.json", st_dir);
     snprintf(cfgpath, sizeof cfgpath, "%s/hax/config.json", cfg_dir);
-    struct stat st;
-    EXPECT(stat(stpath, &st) == 0 && (st.st_mode & 0777) == 0600);
-    EXPECT(stat(cfgpath, &st) != 0);
+    t_expect_private_file(stpath);
+    EXPECT(fs_entry_exists(cfgpath) == 0);
 
     /* Reload from disk: the state tier reads back. */
     config_load(NULL);
@@ -501,16 +503,16 @@ static void test_persist_state_roundtrip(void)
     EXPECT_STR_EQ(config_str("model"), "some/model");
 
     /* An env var still wins over a persisted selection (one-off override). */
-    setenv("HAX_MODEL", "env-model", 1);
+    t_env_set("HAX_MODEL", "env-model");
     EXPECT_STR_EQ(config_str("model"), "env-model");
-    unsetenv("HAX_MODEL");
+    t_env_unset("HAX_MODEL");
 
     /* Deleting a selection key removes it; resolution falls through. */
     EXPECT(config_persist_state("provider", NULL) == 0);
     EXPECT(config_str("provider") == NULL);
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_persist_roundtrip(void)
@@ -518,14 +520,15 @@ static void test_persist_roundtrip(void)
     clear_env();
     config_free();
 
-    char *dir = t_tempdir();
-    setenv("XDG_CONFIG_HOME", dir, 1);
+    char *dir = path_join(t_tempdir(), "config-\xc3\xa9");
+    EXPECT(t_mkdir(dir, 0700) == 0);
+    t_env_set("XDG_CONFIG_HOME", dir);
     /* Isolate the state dir too: config_init() reads state.json (the
      * state tier) from XDG_STATE_HOME, and a developer's real
      * ~/.local/state/hax/state.json would otherwise shadow the config-file
      * values this test persists. The temp dir holds no state.json, so the
      * state tier stays empty. */
-    setenv("XDG_STATE_HOME", dir, 1);
+    t_env_set("XDG_STATE_HOME", dir);
 
     /* Persist a flat and a nested key, then reload from disk. */
     EXPECT(config_persist("model", "saved-model") == 0);
@@ -543,8 +546,7 @@ static void test_persist_roundtrip(void)
     char *config_body = fs_read_file(cfgpath, &config_len);
     EXPECT(config_body && config_len > 0 && config_body[config_len - 1] == '\n');
     free(config_body);
-    struct stat st;
-    EXPECT(stat(cfgpath, &st) == 0 && (st.st_mode & 0777) == 0600);
+    t_expect_private_file(cfgpath);
 
     /* A subsequent persist preserves the earlier keys. */
     EXPECT(config_persist("effort", "high") == 0);
@@ -560,13 +562,14 @@ static void test_persist_roundtrip(void)
     mode_t prev_umask = umask(0777);
     EXPECT(config_persist("model", "saved-under-umask") == 0);
     umask(prev_umask);
-    EXPECT(stat(cfgpath, &st) == 0 && (st.st_mode & 0777) == 0600);
+    t_expect_private_file(cfgpath);
     config_load(NULL);
     config_init();
     EXPECT_STR_EQ(config_str("model"), "saved-under-umask");
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
+    free(dir);
 }
 
 static void test_persist_failure_rolls_back(void)
@@ -576,11 +579,11 @@ static void test_persist_failure_rolls_back(void)
     /* An unwritable XDG path makes the disk write fail; the in-memory
      * tier must keep the old value rather than claim one the disk never
      * saw. */
-    setenv("XDG_CONFIG_HOME", "/dev/null/nope", 1);
+    t_env_set("XDG_CONFIG_HOME", "/dev/null/nope");
     EXPECT(config_load("{\"model\": \"keep\"}") == 0);
     EXPECT(config_persist("model", "lost") == -1);
     EXPECT_STR_EQ(config_str("model"), "keep");
-    unsetenv("XDG_CONFIG_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
 }
 
 static void test_persist_flat_key(void)
@@ -589,8 +592,8 @@ static void test_persist_flat_key(void)
     config_free();
 
     char *dir = t_tempdir();
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("XDG_STATE_HOME", dir, 1); /* isolate the state tier — see roundtrip test */
+    t_env_set("XDG_CONFIG_HOME", dir);
+    t_env_set("XDG_STATE_HOME", dir); /* isolate the state tier — see roundtrip test */
 
     /* A hand-written flat dotted key takes lookup precedence, so persist
      * must remove it or it would shadow the nested value it writes. On disk,
@@ -599,7 +602,7 @@ static void test_persist_flat_key(void)
      * test. */
     char cfgdir[2048], cfgpath[4096];
     snprintf(cfgdir, sizeof cfgdir, "%s/hax", dir);
-    EXPECT(mkdir(cfgdir, 0700) == 0);
+    EXPECT(t_mkdir(cfgdir, 0700) == 0);
     snprintf(cfgpath, sizeof cfgpath, "%s/config.json", cfgdir);
     write_file(cfgpath, "{\"providers.openai-compatible.base_url\": \"old\"}");
     config_init();
@@ -618,8 +621,8 @@ static void test_persist_flat_key(void)
     config_init();
     EXPECT(config_str("providers.openai-compatible.base_url") == NULL);
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_registry_introspection(void)
@@ -690,7 +693,7 @@ static void test_source_reports_winning_tier(void)
     EXPECT(config_load_state("{\"show_reasoning\": \"0\"}") == 0);
     EXPECT_STR_EQ(config_source("show_reasoning"), "state");
 
-    setenv("HAX_SHOW_REASONING", "1", 1);
+    t_env_set("HAX_SHOW_REASONING", "1");
     EXPECT_STR_EQ(config_source("show_reasoning"), "env");
 
     /* Run overrides win over the environment. */
@@ -701,7 +704,7 @@ static void test_source_reports_winning_tier(void)
     /* Clearing the override lets the tiers resurface in order. */
     config_set_override("show_reasoning", NULL);
     EXPECT_STR_EQ(config_source("show_reasoning"), "env");
-    unsetenv("HAX_SHOW_REASONING");
+    t_env_unset("HAX_SHOW_REASONING");
     EXPECT_STR_EQ(config_source("show_reasoning"), "state");
     EXPECT(config_load_state(NULL) == 0);
     EXPECT_STR_EQ(config_source("show_reasoning"), "config");
@@ -712,19 +715,19 @@ static void test_source_reports_winning_tier(void)
      * and bool), so the reported source matches where the effective value
      * comes from — not the empty tier shadowing it. */
     EXPECT(config_load("{\"markdown\": \"0\", \"context_limit\": \"128k\"}") == 0);
-    setenv("HAX_MARKDOWN", "", 1);
-    setenv("HAX_CONTEXT_LIMIT", "", 1);
+    t_env_set("HAX_MARKDOWN", "");
+    t_env_set("HAX_CONTEXT_LIMIT", "");
     EXPECT_STR_EQ(config_source("markdown"), "config"); /* empty env skipped */
     EXPECT(config_bool("markdown") == 0);               /* effective from file */
     EXPECT_STR_EQ(config_source("context_limit"), "config");
     EXPECT(config_tokens("context_limit") == 128000);
     /* A free-form setting keeps empty-as-meaningful: the empty env wins. */
-    setenv("HAX_SYSTEM_PROMPT", "", 1);
+    t_env_set("HAX_SYSTEM_PROMPT", "");
     EXPECT(config_load("{\"system_prompt\": \"from file\"}") == 0);
     EXPECT_STR_EQ(config_source("system_prompt"), "env");
-    unsetenv("HAX_MARKDOWN");
-    unsetenv("HAX_CONTEXT_LIMIT");
-    unsetenv("HAX_SYSTEM_PROMPT");
+    t_env_unset("HAX_MARKDOWN");
+    t_env_unset("HAX_CONTEXT_LIMIT");
+    t_env_unset("HAX_SYSTEM_PROMPT");
 }
 
 static void test_string_and_integer_value_validation(void)
@@ -941,9 +944,9 @@ static void test_empty_policy(void)
      * through the registry — no per-call-site skip-empty choice. */
     EXPECT(config_load("{\"theme\": \"light\", \"sort_models\": \"on\","
                        " \"notify\": \"bel\"}") == 0);
-    setenv("HAX_THEME", "", 1);
-    setenv("HAX_SORT_MODELS", "", 1);
-    setenv("HAX_NOTIFY", "", 1);
+    t_env_set("HAX_THEME", "");
+    t_env_set("HAX_SORT_MODELS", "");
+    t_env_set("HAX_NOTIFY", "");
     EXPECT_STR_EQ(config_str("theme"), "light");
     EXPECT_STR_EQ(config_source("theme"), "config");
     EXPECT_STR_EQ(config_str("sort_models"), "on");
@@ -957,10 +960,10 @@ static void test_empty_policy(void)
      * and is reported there, matching what the consumer reads. */
     EXPECT(config_load("{\"system_prompt\": \"from file\", \"effort\": \"high\","
                        " \"transcript\": \"/tmp/transcript\", \"trace\": \"/tmp/trace\"}") == 0);
-    setenv("HAX_SYSTEM_PROMPT", "", 1);
-    setenv("HAX_EFFORT", "", 1);
-    setenv("HAX_TRANSCRIPT", "", 1);
-    setenv("HAX_TRACE", "", 1);
+    t_env_set("HAX_SYSTEM_PROMPT", "");
+    t_env_set("HAX_EFFORT", "");
+    t_env_set("HAX_TRANSCRIPT", "");
+    t_env_set("HAX_TRACE", "");
     const char *sp = config_str("system_prompt");
     EXPECT(sp && !*sp);
     EXPECT_STR_EQ(config_source("system_prompt"), "env");
@@ -994,7 +997,7 @@ static void test_preset_apply(void)
     EXPECT(config_preset_apply("review", CONFIG_TIER_RUN, &err) == 0);
     EXPECT(err == NULL);
     /* Members land in the override tier — above env and the file tier. */
-    setenv("HAX_MODEL", "env-model", 1);
+    t_env_set("HAX_MODEL", "env-model");
     EXPECT_STR_EQ(config_str("provider"), "mock");
     EXPECT_STR_EQ(config_str("model"), "rev-model");
     EXPECT_STR_EQ(config_str("effort"), "high");
@@ -1021,8 +1024,8 @@ static void test_preset_apply(void)
      * sentinel — the provider's default applies and the env var must NOT
      * resurface — and clears the system_prompt override, so normal
      * resolution returns and the env var DOES resurface. */
-    setenv("HAX_SYSTEM_PROMPT", "custom prompt", 1);
-    setenv("HAX_TINT", "violet", 1);
+    t_env_set("HAX_SYSTEM_PROMPT", "custom prompt");
+    t_env_set("HAX_TINT", "violet");
     EXPECT(config_preset_apply("min", CONFIG_TIER_RUN, &err) == 0);
     EXPECT(err == NULL);
     EXPECT_STR_EQ(config_str("provider"), "mock");
@@ -1034,9 +1037,9 @@ static void test_preset_apply(void)
     EXPECT(config_preset_tint("min") == NULL);
     EXPECT_STR_EQ(config_str("tint"), "violet");
     EXPECT_STR_EQ(config_str("preset"), "min");
-    unsetenv("HAX_MODEL");
-    unsetenv("HAX_SYSTEM_PROMPT");
-    unsetenv("HAX_TINT");
+    t_env_unset("HAX_MODEL");
+    t_env_unset("HAX_SYSTEM_PROMPT");
+    t_env_unset("HAX_TINT");
 
     /* Applying a stance does clear an explicit runtime tint, so its own hue
      * takes over: presets replace what was picked before them. */
@@ -1085,12 +1088,12 @@ static void test_conversation_tier(void)
      * it was using, and configuration doesn't quietly redirect it. (A
      * subagent inherits its parent's HAX_* selection, so this is what keeps
      * `hax --resume=<child>` on the child's own setup.) */
-    setenv("HAX_PROVIDER", "mock", 1);
-    setenv("HAX_MODEL", "env-model", 1);
+    t_env_set("HAX_PROVIDER", "mock");
+    t_env_set("HAX_MODEL", "env-model");
     EXPECT_STR_EQ(config_str("provider"), "codex");
     EXPECT_STR_EQ(config_str("model"), "gpt-5.1-codex");
-    unsetenv("HAX_PROVIDER");
-    unsetenv("HAX_MODEL");
+    t_env_unset("HAX_PROVIDER");
+    t_env_unset("HAX_MODEL");
 
     /* The selection flags are the escape hatch: a run override wins, and
      * --provider unpins the conversation's model/effort (bound to the
@@ -1522,14 +1525,14 @@ static void test_preset_save(void)
     config_free();
 
     char *dir = t_tempdir();
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("XDG_STATE_HOME", dir, 1); /* isolate the state tier — see roundtrip test */
+    t_env_set("XDG_CONFIG_HOME", dir);
+    t_env_set("XDG_STATE_HOME", dir); /* isolate the state tier — see roundtrip test */
 
     /* Seed and load unrelated content so the save must preserve the process's config snapshot. The
      * new preset must apply both immediately and after a reload. */
     char precfg[4096];
     snprintf(precfg, sizeof precfg, "%s/hax", dir);
-    EXPECT(mkdir(precfg, 0700) == 0);
+    EXPECT(t_mkdir(precfg, 0700) == 0);
     snprintf(precfg, sizeof precfg, "%s/hax/config.json", dir);
     write_file(precfg, "{\"model\": \"keep-me\"}");
     config_init();
@@ -1591,11 +1594,10 @@ static void test_preset_save(void)
     /* The file must stay private: it sits beside API keys in the same file. */
     char cfgpath[4096];
     snprintf(cfgpath, sizeof cfgpath, "%s/hax/config.json", dir);
-    struct stat sb;
-    EXPECT(stat(cfgpath, &sb) == 0 && (sb.st_mode & 0777) == 0600);
+    t_expect_private_file(cfgpath);
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_preset_save_errors(void)
@@ -1604,8 +1606,8 @@ static void test_preset_save_errors(void)
     config_free();
 
     char *dir = t_tempdir();
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("XDG_STATE_HOME", dir, 1);
+    t_env_set("XDG_CONFIG_HOME", dir);
+    t_env_set("XDG_STATE_HOME", dir);
 
     /* Validation is the same one apply runs, so a save can never write a
      * definition /preset would then reject. Nothing is written on failure. */
@@ -1636,7 +1638,7 @@ static void test_preset_save_errors(void)
      * edits it next. On disk, since that is what the save merges into. */
     char cfgdir[2048], cfgpath[4096];
     snprintf(cfgdir, sizeof cfgdir, "%s/hax", dir);
-    EXPECT(mkdir(cfgdir, 0700) == 0);
+    EXPECT(t_mkdir(cfgdir, 0700) == 0);
     snprintf(cfgpath, sizeof cfgpath, "%s/config.json", cfgdir);
     write_file(cfgpath, "{\"presets.flat\": {\"provider\": \"mock\", \"model\": \"old\"}}");
     config_init();
@@ -1652,8 +1654,8 @@ static void test_preset_save_errors(void)
     config_init();
     EXPECT_STR_EQ(config_preset_model("flat"), "new");
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_preset_save_overwrites_external_edit(void)
@@ -1662,15 +1664,15 @@ static void test_preset_save_overwrites_external_edit(void)
     config_free();
 
     char *dir = t_tempdir();
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("XDG_STATE_HOME", dir, 1);
+    t_env_set("XDG_CONFIG_HOME", dir);
+    t_env_set("XDG_STATE_HOME", dir);
 
     /* The file is rewritten from the tier this process holds, so an edit made
      * while the session ran is overwritten — the same way it had no effect on
      * the running session. Deliberate: one snapshot governs both. */
     char cfgdir[2048], cfgpath[4096];
     snprintf(cfgdir, sizeof cfgdir, "%s/hax", dir);
-    EXPECT(mkdir(cfgdir, 0700) == 0);
+    EXPECT(t_mkdir(cfgdir, 0700) == 0);
     snprintf(cfgpath, sizeof cfgpath, "%s/config.json", cfgdir);
     write_file(cfgpath, "{\"model\": \"at-startup\"}");
     config_init();
@@ -1685,8 +1687,8 @@ static void test_preset_save_overwrites_external_edit(void)
     EXPECT_STR_EQ(config_str("model"), "at-startup");
     EXPECT_STR_EQ(config_preset_provider("scout"), "mock");
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_write_refuses_unusable_file(void)
@@ -1697,10 +1699,10 @@ static void test_write_refuses_unusable_file(void)
     char *dir = t_tempdir();
     char cfgdir[2048], cfgpath[4096];
     snprintf(cfgdir, sizeof cfgdir, "%s/hax", dir);
-    EXPECT(mkdir(cfgdir, 0700) == 0);
+    EXPECT(t_mkdir(cfgdir, 0700) == 0);
     snprintf(cfgpath, sizeof cfgpath, "%s/config.json", cfgdir);
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("XDG_STATE_HOME", dir, 1);
+    t_env_set("XDG_CONFIG_HOME", dir);
+    t_env_set("XDG_STATE_HOME", dir);
 
     /* A file that couldn't be read at startup leaves the tier empty, so a write
      * built from it would replace hand-authored content this process never saw.
@@ -1732,8 +1734,8 @@ static void test_write_refuses_unusable_file(void)
     EXPECT(err == NULL);
     EXPECT_STR_EQ(config_str("model"), "fixed");
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_preset_save_rejects_state_definition(void)
@@ -1742,8 +1744,8 @@ static void test_preset_save_rejects_state_definition(void)
     config_free();
 
     char *dir = t_tempdir();
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("XDG_STATE_HOME", dir, 1);
+    t_env_set("XDG_CONFIG_HOME", dir);
+    t_env_set("XDG_STATE_HOME", dir);
 
     /* A hand-placed nested state-tier preset outranks the config file, so
      * writing the same name there would resolve to the state one — reporting a
@@ -1771,8 +1773,8 @@ static void test_preset_save_rejects_state_definition(void)
     EXPECT_STR_EQ(config_preset_provider("junky"), "mock");
     config_load_state(NULL);
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_preset_save_follows_symlink(void)
@@ -1786,17 +1788,17 @@ static void test_preset_save_follows_symlink(void)
     char *dir = t_tempdir();
     char cfgdir[2048], link[4096], real[4096];
     snprintf(cfgdir, sizeof cfgdir, "%s/hax", dir);
-    EXPECT(mkdir(cfgdir, 0700) == 0);
+    EXPECT(t_mkdir(cfgdir, 0700) == 0);
     snprintf(link, sizeof link, "%s/config.json", cfgdir);
     snprintf(real, sizeof real, "%s/dotfiles-config.json", dir);
     FILE *fp = fopen(real, "w");
     EXPECT(fp != NULL);
     fputs("{\"model\": \"from-dotfiles\"}\n", fp);
     fclose(fp);
-    EXPECT(symlink(real, link) == 0);
+    T_SYMLINK(real, link, 0);
 
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("XDG_STATE_HOME", dir, 1);
+    t_env_set("XDG_CONFIG_HOME", dir);
+    t_env_set("XDG_STATE_HOME", dir);
     config_init();
     EXPECT_STR_EQ(config_str("model"), "from-dotfiles");
 
@@ -1804,15 +1806,14 @@ static void test_preset_save_follows_symlink(void)
     char *err = NULL;
     EXPECT(config_preset_save("scout", &def, &err) == 0);
 
-    struct stat sb;
-    EXPECT(lstat(link, &sb) == 0 && S_ISLNK(sb.st_mode));
+    EXPECT(t_file_is_symlink(link));
     config_load(NULL);
     config_init(); /* reads through the link — i.e. the real file was written */
     EXPECT_STR_EQ(config_preset_provider("scout"), "mock");
     EXPECT_STR_EQ(config_str("model"), "from-dotfiles");
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_preset_save_follows_dangling_symlink(void)
@@ -1827,13 +1828,13 @@ static void test_preset_save_follows_dangling_symlink(void)
     char *dir = t_tempdir();
     char cfgdir[2048], link[4096], real[4096];
     snprintf(cfgdir, sizeof cfgdir, "%s/hax", dir);
-    EXPECT(mkdir(cfgdir, 0700) == 0);
+    EXPECT(t_mkdir(cfgdir, 0700) == 0);
     snprintf(link, sizeof link, "%s/config.json", cfgdir);
     snprintf(real, sizeof real, "%s/dotfiles-config.json", dir);
-    EXPECT(symlink(real, link) == 0);
+    T_SYMLINK(real, link, 0);
 
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("XDG_STATE_HOME", dir, 1);
+    t_env_set("XDG_CONFIG_HOME", dir);
+    t_env_set("XDG_STATE_HOME", dir);
     config_init();
 
     struct config_preset def = {.provider = "mock", .model = "m"};
@@ -1841,15 +1842,14 @@ static void test_preset_save_follows_dangling_symlink(void)
     EXPECT(config_preset_save("scout", &def, &err) == 0);
     EXPECT(err == NULL);
 
-    struct stat sb;
-    EXPECT(lstat(link, &sb) == 0 && S_ISLNK(sb.st_mode)); /* still a link */
-    EXPECT(stat(real, &sb) == 0 && S_ISREG(sb.st_mode));  /* target created */
+    EXPECT(t_file_is_symlink(link)); /* still a link */
+    EXPECT(t_file_is_regular(real)); /* target created */
     config_load(NULL);
     config_init();
     EXPECT_STR_EQ(config_preset_provider("scout"), "mock");
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_persist_into_empty_file(void)
@@ -1862,18 +1862,18 @@ static void test_persist_into_empty_file(void)
     char *dir = t_tempdir();
     char cfgdir[2048], stdir[2048], path[4096];
     snprintf(cfgdir, sizeof cfgdir, "%s/hax", dir);
-    EXPECT(mkdir(cfgdir, 0700) == 0);
+    EXPECT(t_mkdir(cfgdir, 0700) == 0);
     snprintf(path, sizeof path, "%s/config.json", cfgdir);
     write_file(path, "\n  \n"); /* whitespace only is empty, not malformed */
     snprintf(stdir, sizeof stdir, "%s/state", dir);
-    EXPECT(mkdir(stdir, 0700) == 0);
+    EXPECT(t_mkdir(stdir, 0700) == 0);
     snprintf(path, sizeof path, "%s/hax", stdir);
-    EXPECT(mkdir(path, 0700) == 0);
+    EXPECT(t_mkdir(path, 0700) == 0);
     snprintf(path, sizeof path, "%s/hax/state.json", stdir);
     write_file(path, "");
 
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("XDG_STATE_HOME", stdir, 1);
+    t_env_set("XDG_CONFIG_HOME", dir);
+    t_env_set("XDG_STATE_HOME", stdir);
     config_init();
 
     struct config_preset def = {.provider = "mock", .model = "m"};
@@ -1890,8 +1890,8 @@ static void test_persist_into_empty_file(void)
     EXPECT(config_preset_save("scout2", &def, &err) == 0);
     EXPECT(err == NULL);
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_preset_exists_counts_any_member(void)
@@ -1941,7 +1941,7 @@ static void test_write_fails_on_unresolvable_link(void)
     char *dir = t_tempdir();
     char cfgdir[2048], link[4096], next[4096];
     snprintf(cfgdir, sizeof cfgdir, "%s/hax", dir);
-    EXPECT(mkdir(cfgdir, 0700) == 0);
+    EXPECT(t_mkdir(cfgdir, 0700) == 0);
     snprintf(link, sizeof link, "%s/config.json", cfgdir);
     /* config.json -> hop1 -> ... -> hop33 (absent) */
     for (int i = 1; i <= 33; i++) {
@@ -1952,11 +1952,11 @@ static void test_write_fails_on_unresolvable_link(void)
             snprintf(prev, sizeof prev, "%s/hop%d", cfgdir, i - 1);
             from = prev;
         }
-        EXPECT(symlink(next, from) == 0);
+        T_SYMLINK(next, from, 0);
     }
 
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("XDG_STATE_HOME", dir, 1);
+    t_env_set("XDG_CONFIG_HOME", dir);
+    t_env_set("XDG_STATE_HOME", dir);
     config_init();
 
     struct config_preset def = {.provider = "mock", .model = "m"};
@@ -1965,11 +1965,10 @@ static void test_write_fails_on_unresolvable_link(void)
     EXPECT(err != NULL);
     free(err);
     EXPECT(config_persist("model", "m") == -1);
-    struct stat sb;
-    EXPECT(lstat(link, &sb) == 0 && S_ISLNK(sb.st_mode)); /* still a link */
+    EXPECT(t_file_is_symlink(link)); /* still a link */
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_write_creates_link_target_directory(void)
@@ -1983,13 +1982,13 @@ static void test_write_creates_link_target_directory(void)
     char *dir = t_tempdir();
     char cfgdir[2048], link[4096], real[4096];
     snprintf(cfgdir, sizeof cfgdir, "%s/hax", dir);
-    EXPECT(mkdir(cfgdir, 0700) == 0);
+    EXPECT(t_mkdir(cfgdir, 0700) == 0);
     snprintf(link, sizeof link, "%s/config.json", cfgdir);
     snprintf(real, sizeof real, "%s/dotfiles/hax/config.json", dir);
-    EXPECT(symlink(real, link) == 0);
+    T_SYMLINK(real, link, 0);
 
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("XDG_STATE_HOME", dir, 1);
+    t_env_set("XDG_CONFIG_HOME", dir);
+    t_env_set("XDG_STATE_HOME", dir);
     config_init();
 
     struct config_preset def = {.provider = "mock", .model = "m"};
@@ -1997,15 +1996,14 @@ static void test_write_creates_link_target_directory(void)
     EXPECT(config_preset_save("scout", &def, &err) == 0);
     EXPECT(err == NULL);
 
-    struct stat sb;
-    EXPECT(lstat(link, &sb) == 0 && S_ISLNK(sb.st_mode));
-    EXPECT(stat(real, &sb) == 0 && S_ISREG(sb.st_mode));
+    EXPECT(t_file_is_symlink(link));
+    EXPECT(t_file_is_regular(real));
     config_load(NULL);
     config_init();
     EXPECT_STR_EQ(config_preset_provider("scout"), "mock");
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_preset_save_refuses_bad_presets_container(void)
@@ -2016,10 +2014,10 @@ static void test_preset_save_refuses_bad_presets_container(void)
     char *dir = t_tempdir();
     char cfgdir[2048], cfgpath[4096];
     snprintf(cfgdir, sizeof cfgdir, "%s/hax", dir);
-    EXPECT(mkdir(cfgdir, 0700) == 0);
+    EXPECT(t_mkdir(cfgdir, 0700) == 0);
     snprintf(cfgpath, sizeof cfgpath, "%s/config.json", cfgdir);
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("XDG_STATE_HOME", dir, 1);
+    t_env_set("XDG_CONFIG_HOME", dir);
+    t_env_set("XDG_STATE_HOME", dir);
 
     /* The file parses, so it is usable — but "presets" holds something that
      * isn't a block of them. Writing would drop it, and there is no name to
@@ -2048,8 +2046,8 @@ static void test_preset_save_refuses_bad_presets_container(void)
     EXPECT_STR_EQ(config_preset_provider("scout"), "mock");
     EXPECT_STR_EQ(config_preset_provider("other"), "mock");
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_preset_save_state_flat_does_not_shadow(void)
@@ -2058,8 +2056,8 @@ static void test_preset_save_state_flat_does_not_shadow(void)
     config_free();
 
     char *dir = t_tempdir();
-    setenv("XDG_CONFIG_HOME", dir, 1);
-    setenv("XDG_STATE_HOME", dir, 1);
+    t_env_set("XDG_CONFIG_HOME", dir);
+    t_env_set("XDG_STATE_HOME", dir);
 
     /* A *flat* state definition is preset_node's last-resort fallback, which the
      * nested member a save writes already beats — so the write does take effect
@@ -2078,8 +2076,8 @@ static void test_preset_save_state_flat_does_not_shadow(void)
     free(err);
     config_load_state(NULL);
 
-    unsetenv("XDG_CONFIG_HOME");
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_CONFIG_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_str_below_run(void)
@@ -2099,9 +2097,9 @@ static void test_str_below_run(void)
 
     /* Every lower tier still applies in order, and the registry default is the
      * floor once none of them names one. */
-    setenv("HAX_TINT", "rose", 1);
+    t_env_set("HAX_TINT", "rose");
     EXPECT_STR_EQ(config_str_below_run("tint"), "rose");
-    unsetenv("HAX_TINT");
+    t_env_unset("HAX_TINT");
     EXPECT(config_load(NULL) == 0);
     EXPECT_STR_EQ(config_str_below_run("tint"), "teal");
     config_set_override("tint", NULL);

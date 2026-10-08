@@ -8,12 +8,24 @@
 
 #include "agent_core.h"
 #include "config.h"
+#include "env.h"
+#include "files.h"
 #include "harness.h"
 #include "oneshot.h"
 #include "provider.h"
 #include "session.h"
 #include "xalloc.h"
+#include "system/path.h"
+#include "terminal/interrupt.h"
 #include "transport/http.h"
+#ifdef _WIN32
+#include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+
+#include "system/win_utf8.h"
+#include "terminal/win_console.h"
+#endif
 
 struct captured_run {
     int result;
@@ -41,8 +53,8 @@ static struct captured_run capture_run(struct provider *provider, const char *pr
     fflush(stderr);
     int saved_stdout = dup(STDOUT_FILENO);
     int saved_stderr = dup(STDERR_FILENO);
-    FILE *out = tmpfile();
-    FILE *err = tmpfile();
+    FILE *out = t_tmpfile();
+    FILE *err = t_tmpfile();
     EXPECT(saved_stdout >= 0 && saved_stderr >= 0);
     EXPECT(out != NULL && err != NULL);
     EXPECT(dup2(fileno(out), STDOUT_FILENO) >= 0);
@@ -256,9 +268,13 @@ static struct captured_run capture_run_piped_stdout(struct provider *provider, c
                                                     const struct hax_opts *options,
                                                     int reader_exited)
 {
-    void (*saved_sigpipe)(int) = signal(SIGPIPE, SIG_DFL);
     int pipe_fds[2];
+#ifdef _WIN32
+    EXPECT(_pipe(pipe_fds, 4096, _O_BINARY | _O_NOINHERIT) == 0);
+#else
+    void (*saved_sigpipe)(int) = signal(SIGPIPE, SIG_DFL);
     EXPECT(pipe(pipe_fds) == 0);
+#endif
     if (reader_exited)
         close(pipe_fds[0]);
     else
@@ -268,7 +284,7 @@ static struct captured_run capture_run_piped_stdout(struct provider *provider, c
     fflush(stderr);
     int saved_stdout = dup(STDOUT_FILENO);
     int saved_stderr = dup(STDERR_FILENO);
-    FILE *err = tmpfile();
+    FILE *err = t_tmpfile();
     EXPECT(saved_stdout >= 0 && saved_stderr >= 0 && err != NULL);
     EXPECT(dup2(pipe_fds[1], STDOUT_FILENO) >= 0);
     EXPECT(dup2(fileno(err), STDERR_FILENO) >= 0);
@@ -286,7 +302,9 @@ static struct captured_run capture_run_piped_stdout(struct provider *provider, c
         close(consumer_read_fd);
         consumer_read_fd = -1;
     }
+#ifndef _WIN32
     signal(SIGPIPE, saved_sigpipe);
+#endif
 
     struct captured_run captured = {
         .result = result,
@@ -410,6 +428,19 @@ static void test_sigint_with_dead_consumer_keeps_interrupt_outcome(void)
     captured_run_free(&run);
 }
 
+static void request_pause(void)
+{
+#ifdef _WIN32
+    EXPECT(GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0));
+    ULONGLONG deadline = GetTickCount64() + 2000;
+    while (!interrupt_pause_requested() && GetTickCount64() < deadline)
+        Sleep(5);
+    EXPECT(interrupt_pause_requested());
+#else
+    raise(SIGUSR1);
+#endif
+}
+
 static int paused_stream(struct provider *provider, const struct context *context,
                          const char *model, stream_cb callback, void *user, http_tick_cb tick,
                          void *tick_user)
@@ -420,7 +451,7 @@ static int paused_stream(struct provider *provider, const struct context *contex
     (void)tick;
     (void)tick_user;
 
-    raise(SIGUSR1);
+    request_pause();
     struct stream_event events[] = {
         {.kind = EV_TEXT_DELTA, .u.text_delta = {.text = "working"}},
         {.kind = EV_TOOL_CALL_START, .u.tool_call_start = {.id = "call-1", .name = "bash"}},
@@ -443,7 +474,7 @@ static int paused_stream(struct provider *provider, const struct context *contex
 
 /* A pause lets the streamed turn and its tool batch finish, then stops at the seam instead of
  * launching the follow-up turn. */
-static void test_sigusr1_pauses_at_seam(void)
+static void test_pause_stops_at_seam(void)
 {
     configure_test_run();
     struct provider provider = {
@@ -462,22 +493,24 @@ static void test_sigusr1_pauses_at_seam(void)
     EXPECT(strstr(run.out, "tool_result") != NULL);
     captured_run_free(&run);
 
+#ifndef _WIN32
     /* Outside the run's graceful window the pause signal must be ignored, not fatal. */
     raise(SIGUSR1);
+#endif
 }
 
 /* Recorded-session variant of configure_test_run: each call isolates its session files. */
 static void configure_recorded_run(void)
 {
     configure_test_run();
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
+    t_env_set("XDG_STATE_HOME", t_tempdir());
     config_set_override("no_session", "0");
 }
 
 /* Path of the only session the current test recorded. */
 static char *recorded_session_path(void)
 {
-    char *cwd = getcwd(NULL, 0);
+    char *cwd = path_cwd();
     struct session_entry *sessions = NULL;
     size_t count = 0;
     session_list(cwd, &sessions, &count);
@@ -689,8 +722,29 @@ static void test_missing_model_is_diagnostic(void)
     captured_run_free(&run);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+#ifdef _WIN32
+    /* Ctrl-Break is scoped to this owned console, never the test runner's console. */
+    if (argc == 1) {
+        wchar_t module[32768];
+        EXPECT(GetModuleFileNameW(NULL, module, sizeof(module) / sizeof(*module)) != 0);
+        char *program = win_utf8_from_wide(module);
+        const char *child_argv[] = {program, "--console-child", NULL};
+        struct t_win_console *console = t_win_console_start(child_argv);
+        EXPECT(console != NULL);
+        if (console) {
+            unsigned long exit_code = 1;
+            EXPECT(t_win_console_wait(console, 15000, &exit_code) == 1 && exit_code == 0);
+            t_win_console_close(console);
+        }
+        free(program);
+        T_REPORT();
+    }
+#else
+    (void)argc;
+#endif
+    (void)argv;
     /* Outside any repository, so recorded sessions neither run git nor depend on the checkout. */
     EXPECT(chdir(t_tempdir()) == 0);
     test_final_messages_are_pipeable();
@@ -700,7 +754,7 @@ int main(void)
     test_plain_write_failure_fails_the_run();
     test_sigint_interrupts_gracefully();
     test_sigint_with_dead_consumer_keeps_interrupt_outcome();
-    test_sigusr1_pauses_at_seam();
+    test_pause_stops_at_seam();
     test_promptless_resume_continues_clean_seam();
     test_promptless_resume_adds_continuation();
     test_resumed_run_compacts_oversized_window();

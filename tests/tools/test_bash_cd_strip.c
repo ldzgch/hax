@@ -271,8 +271,33 @@ static void test_no_strip_tilde_with_space_in_home(void)
     expect_no_strip("cd ~ && pwd", "/tmp/a b", "/tmp/a b");
 }
 
+#ifdef _WIN32
+static void test_native_windows_and_git_bash_paths(void)
+{
+    const char *cwd = "Z:\\coding\\Jos\xc3\xa9";
+    expect_strip("cd Z:/coding/Jos\xc3\xa9 && rg foo", cwd, NULL, "rg foo");
+    expect_strip("cd '/z/coding/Jos\xc3\xa9/' && rg foo", cwd, NULL, "rg foo");
+    expect_strip("cd 'Z:\\coding\\Jos\xc3\xa9' && rg foo", cwd, NULL, "rg foo");
+    expect_strip("cd z:/ && pwd", "Z:\\", NULL, "pwd");
+    expect_strip("cd /z && pwd", "Z:\\", NULL, "pwd");
+    expect_strip("cd //server/share/dir && pwd", "\\\\server\\share\\dir", NULL, "pwd");
+    expect_strip("cd ~ && pwd", cwd, cwd, "pwd");
+    expect_strip("cd $HOME/subdir && pwd", "Z:\\home\\subdir", "Z:\\home", "pwd");
+    expect_no_strip("cd Y:/coding/Jos\xc3\xa9 && rg foo", cwd, NULL);
+    expect_no_strip("cd /y/coding/Jos\xc3\xa9 && rg foo", cwd, NULL);
+    expect_no_strip("cd z:/Coding/Jos\xc3\xa9 && rg foo", cwd, NULL);
+    expect_no_strip("cd Z:relative && rg foo", cwd, NULL);
+    expect_no_strip("cd 'Z:' && pwd", "Z:\\", NULL);
+    expect_no_strip("cd / && pwd", "Z:\\", NULL);
+    expect_no_strip("cd Z:/coding/../coding/Jos\xc3\xa9 && rg foo", cwd, NULL);
+}
+#endif
+
 int main(void)
 {
+#ifdef _WIN32
+    test_native_windows_and_git_bash_paths();
+#endif
     test_strip_absolute_path();
     test_strip_absolute_path_trailing_slash();
     test_strip_tilde_subpath();

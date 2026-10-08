@@ -5,6 +5,7 @@
 
 #include "config.h"
 #include "diag.h"
+#include "env.h"
 #include "harness.h"
 #include "provider.h"
 #include "providers/http_provider.h"
@@ -278,7 +279,7 @@ static void test_def_construction(void)
     }
 
     config_set_override("model", NULL);
-    unsetenv("HAX_MODEL");
+    t_env_unset("HAX_MODEL");
     unsigned long diagnostics_before = hax_diag_sequence();
     EXPECT(provider_construct(provider_find("llamacpp")) == NULL);
     EXPECT(hax_diag_sequence() == diagnostics_before + 1);

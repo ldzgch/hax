@@ -54,14 +54,14 @@ void bash_format_byte_size(char *buf, size_t buf_size, size_t bytes);
 void bash_output_append_sanitized(struct buf *out, const char *data, size_t len);
 
 /* Read a line-aligned head of the byte range starting at range_start, never reaching
- * limit_off. A long first line yields no head. Reads with pread; the fd offset is untouched.
+ * limit_off. A long first line yields no head. The fd offset is untouched.
  * Returns -1 on read failure. */
 int bash_read_head_slice(int fd, off_t range_start, size_t cap_bytes, size_t cap_lines,
                          off_t limit_off, struct buf *out, size_t *kept_bytes_out,
                          size_t *kept_lines_out);
 
 /* Read a line-aligned tail of the byte range [range_start, range_start + range_bytes),
- * retaining raw bytes when alignment would empty a long line. Reads with pread; the fd offset
+ * retaining raw bytes when alignment would empty a long line. The fd offset
  * is untouched. Returns -1 on read failure. */
 int bash_read_tail_slice(int fd, off_t range_start, size_t range_bytes, size_t cap_bytes,
                          size_t cap_lines, struct buf *out, size_t *kept_bytes_out,

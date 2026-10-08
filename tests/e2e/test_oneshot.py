@@ -3,6 +3,7 @@
 interrupted run."""
 
 import json
+import os
 import signal
 import time
 
@@ -118,6 +119,9 @@ def test_sigint_then_resume():
         text Never delivered
         end-turn
     """
+    if os.name == "nt":
+        windows_interrupt_then_resume(script)
+        return
     home, workdir = harness.make_home()
     proc = harness.spawn_hax(["--json", "go"], script, home, workdir, extra_env=RECORD)
 
@@ -179,6 +183,51 @@ def test_sigint_then_resume():
         result,
     )
     harness.expect(records[-1].get("outcome") == "complete", "the resumed result completes", result)
+
+
+def windows_interrupt_then_resume(script: str) -> None:
+    from windows_terminal import WindowsTerminal
+
+    with WindowsTerminal(script, extra_env=RECORD, args=["--json", "go"]) as term:
+        term.expect('"kind":"user"')
+        time.sleep(0.5)
+        term.send("C-c")
+        harness.expect(term.wait_exit() == 130, "native Ctrl-C exits 130")
+        sessions = list((term.home / ".local" / "state" / "hax" / "sessions").rglob("*.jsonl"))
+        harness.expect(len(sessions) == 1, "interrupted native run records one session")
+        records = [json.loads(line) for line in sessions[0].read_text(encoding="utf-8").splitlines()]
+        harness.expect(
+            any(
+                record.get("kind") == "assistant"
+                and record.get("origin") == "interrupted"
+                and "Partial answer" in record.get("text", "")
+                for record in records
+            ),
+            "native interrupt preserves marked partial text",
+        )
+        session_id = records[0]["id"]
+        home, workdir = term.home, term.workdir
+
+    resume = harness.spawn_hax(
+        ["--json", f"--resume={session_id}"],
+        "text Resumed answer.\nend-turn\n",
+        home,
+        workdir,
+        extra_env=RECORD,
+    )
+    out, err = resume.communicate(timeout=30)
+    result = harness.spawned_result(resume, out, err, workdir)
+    harness.expect(result.returncode == 0, "native promptless resume completes", result)
+    records = [json.loads(line) for line in result.stdout.splitlines()]
+    harness.expect(
+        any(
+            record.get("kind") == "user" and record.get("origin") == "continuation"
+            for record in records
+        ),
+        "native resume inserts a continuation record",
+        result,
+    )
+    harness.expect(records[-1].get("outcome") == "complete", "native resumed result completes", result)
 
 
 harness.main(globals())

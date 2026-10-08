@@ -26,6 +26,9 @@ char *extract_task_id(const char *result);
 /* Wait on task `id` through the task_wait tool; a timeout of 0 takes the configured default. */
 char *wait_for_id(const char *id, int timeout_seconds);
 
+/* Assert the platform's forced-termination report: a POSIX signal or the native job exit code. */
+void expect_task_stopped(const char *result);
+
 /* Immediate kill-and-collect: task_wait with `kill` and no timeout. */
 char *kill_id(const char *id);
 
@@ -37,8 +40,8 @@ int process_is_gone(int pid);
  * process tree before it got that far. Returns the pid, or -1. */
 int await_pid_file(const char *path);
 
-/* A FIFO a task blocks on with `read -r _ <gate`: it holds the task alive across the yield window
- * without timers, and releasing it lets the task finish at once. */
+/* A reusable redirection a task blocks on with `read -r _ <gate`: POSIX uses a FIFO and Windows
+ * uses Bash TCP redirection to a loopback listener. Release unblocks one reader without timers. */
 char *gate_create(void);
 
 /* Let one reader past the gate. Waits up to ten seconds for the reader to open it, so a task that

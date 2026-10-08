@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include <stdlib.h>
 
+#include "env.h"
 #include "harness.h"
 #include "system/clock.h"
 #include "transport/retry.h"
@@ -91,54 +92,54 @@ static void test_backoff_cap(void)
 
 static void test_default_policy_config(void)
 {
-    unsetenv("HAX_HTTP_MAX_RETRIES");
-    unsetenv("HAX_HTTP_RETRY_BASE");
-    unsetenv("HAX_HTTP_IDLE_TIMEOUT");
+    t_env_unset("HAX_HTTP_MAX_RETRIES");
+    t_env_unset("HAX_HTTP_RETRY_BASE");
+    t_env_unset("HAX_HTTP_IDLE_TIMEOUT");
     struct retry_policy defaults = retry_policy_default();
     EXPECT(defaults.max_attempts == 5);
     EXPECT(defaults.base_delay_ms == 1000);
     EXPECT(defaults.idle_timeout_s == 10 * 60);
 
-    setenv("HAX_HTTP_MAX_RETRIES", "7", 1);
+    t_env_set("HAX_HTTP_MAX_RETRIES", "7");
     struct retry_policy override = retry_policy_default();
     EXPECT(override.max_attempts == 8);
 
-    setenv("HAX_HTTP_MAX_RETRIES", "0", 1);
+    t_env_set("HAX_HTTP_MAX_RETRIES", "0");
     struct retry_policy no_retries = retry_policy_default();
     EXPECT(no_retries.max_attempts == 1);
 
     /* Override base delay via parse_duration_ms grammar — "ms" suffix
      * because bare numbers parse as seconds. */
-    setenv("HAX_HTTP_RETRY_BASE", "200ms", 1);
+    t_env_set("HAX_HTTP_RETRY_BASE", "200ms");
     struct retry_policy millisecond_base = retry_policy_default();
     EXPECT(millisecond_base.base_delay_ms == 200);
 
-    setenv("HAX_HTTP_RETRY_BASE", "2", 1);
+    t_env_set("HAX_HTTP_RETRY_BASE", "2");
     struct retry_policy second_base = retry_policy_default();
     EXPECT(second_base.base_delay_ms == 2000);
 
     /* Semantically invalid values fall back to the defaults: a negative
      * retry count and a zero base delay are typos, not meanings. */
-    setenv("HAX_HTTP_MAX_RETRIES", "-1", 1);
+    t_env_set("HAX_HTTP_MAX_RETRIES", "-1");
     struct retry_policy negative_retries = retry_policy_default();
     EXPECT(negative_retries.max_attempts == 5);
 
-    setenv("HAX_HTTP_RETRY_BASE", "0", 1);
+    t_env_set("HAX_HTTP_RETRY_BASE", "0");
     struct retry_policy zero_base = retry_policy_default();
     EXPECT(zero_base.base_delay_ms == 1000);
 
     /* The transport receives whole seconds: non-zero sub-second values round
      * up, while zero retains its explicit "disabled" meaning. */
-    setenv("HAX_HTTP_IDLE_TIMEOUT", "500ms", 1);
+    t_env_set("HAX_HTTP_IDLE_TIMEOUT", "500ms");
     struct retry_policy subsecond = retry_policy_default();
     EXPECT(subsecond.idle_timeout_s == 1);
-    setenv("HAX_HTTP_IDLE_TIMEOUT", "0", 1);
+    t_env_set("HAX_HTTP_IDLE_TIMEOUT", "0");
     struct retry_policy disabled = retry_policy_default();
     EXPECT(disabled.idle_timeout_s == 0);
 
-    unsetenv("HAX_HTTP_MAX_RETRIES");
-    unsetenv("HAX_HTTP_RETRY_BASE");
-    unsetenv("HAX_HTTP_IDLE_TIMEOUT");
+    t_env_unset("HAX_HTTP_MAX_RETRIES");
+    t_env_unset("HAX_HTTP_RETRY_BASE");
+    t_env_unset("HAX_HTTP_IDLE_TIMEOUT");
 }
 
 static int always_cancel(void *user)

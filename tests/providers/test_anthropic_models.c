@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "config.h"
+#include "env.h"
 #include "harness.h"
 #include "loopback.h"
 #include "model_meta.h"
@@ -24,7 +25,7 @@ static int list_models_from_server(struct loopback *server, int n_responses, cha
 
     char base_url[64];
     snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d", port);
-    setenv("HAX_ANTHROPIC_BASE_URL", base_url, 1);
+    t_env_set("HAX_ANTHROPIC_BASE_URL", base_url);
 
     /* Not provider_construct: its metadata warm-up would spend a scripted reply on a listing
      * probe. */
@@ -139,8 +140,8 @@ static void test_background_probe_publishes_metadata(void)
 
     char url[64];
     snprintf(url, sizeof(url), "http://127.0.0.1:%d", port);
-    setenv("HAX_ANTHROPIC_BASE_URL", url, 1);
-    setenv("HAX_MODEL", "probe-model", 1);
+    t_env_set("HAX_ANTHROPIC_BASE_URL", url);
+    t_env_set("HAX_MODEL", "probe-model");
 
     const struct provider_def *factory = provider_find("anthropic-compatible");
     EXPECT(factory != NULL);
@@ -161,17 +162,17 @@ static void test_background_probe_publishes_metadata(void)
 
     loopback_stop(&server);
     EXPECT(atomic_load(&server.served) == 1);
-    unsetenv("HAX_MODEL");
+    t_env_unset("HAX_MODEL");
 }
 
 static void test_max_tokens_uses_model_limit(void)
 {
-    unsetenv("HAX_ANTHROPIC_MAX_TOKENS");
+    t_env_unset("HAX_ANTHROPIC_MAX_TOKENS");
 
     EXPECT(config_str("providers.anthropic-compatible.max_tokens") == NULL);
     EXPECT(config_int("providers.anthropic-compatible.max_tokens") == 0);
 
-    setenv("HAX_ANTHROPIC_BASE_URL", "http://127.0.0.1:1", 1);
+    t_env_set("HAX_ANTHROPIC_BASE_URL", "http://127.0.0.1:1");
     const struct provider_def *factory = provider_find("anthropic-compatible");
     EXPECT(factory != NULL);
     struct provider *provider = factory ? provider_construct(factory) : NULL;
@@ -184,14 +185,14 @@ static void test_max_tokens_uses_model_limit(void)
     store_output_cap(provider, "claude-opus-5", 128000);
     EXPECT(http_provider_max_tokens(provider, "claude-opus-5") == 128000);
 
-    setenv("HAX_ANTHROPIC_MAX_TOKENS", "8000", 1);
+    t_env_set("HAX_ANTHROPIC_MAX_TOKENS", "8000");
     EXPECT(http_provider_max_tokens(provider, "claude-opus-5") == 8000);
 
-    setenv("HAX_ANTHROPIC_MAX_TOKENS", "200000", 1);
+    t_env_set("HAX_ANTHROPIC_MAX_TOKENS", "200000");
     EXPECT(http_provider_max_tokens(provider, "claude-opus-5") == 128000);
 
     EXPECT(http_provider_max_tokens(provider, "unknown-model") == 200000);
-    unsetenv("HAX_ANTHROPIC_MAX_TOKENS");
+    t_env_unset("HAX_ANTHROPIC_MAX_TOKENS");
     provider->destroy(provider);
 }
 
@@ -220,10 +221,10 @@ static void test_first_party_pins_endpoint(void)
 
 int main(void)
 {
-    setenv("HAX_ANTHROPIC_API_KEY", "test-key", 1);
+    t_env_set("HAX_ANTHROPIC_API_KEY", "test-key");
 
     /* Keep constructor probes from racing the model-list fixture for its canned response. */
-    unsetenv("HAX_MODEL");
+    t_env_unset("HAX_MODEL");
     test_first_party_pins_endpoint();
     test_max_tokens_uses_model_limit();
     test_background_probe_publishes_metadata();

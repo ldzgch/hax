@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "env.h"
 #include "harness.h"
 #include "loopback.h"
 #include "provider.h"
@@ -281,11 +282,11 @@ static void test_retry_budget_exhausted(void)
         "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\noops1",
         "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\noops2",
     };
-    setenv("HAX_HTTP_MAX_RETRIES", "1", 1);
+    t_env_set("HAX_HTTP_MAX_RETRIES", "1");
     struct fake_stream fake = {0};
     struct event_log log = {0};
     int result = run_scripted(responses, 2, &fake, &log);
-    unsetenv("HAX_HTTP_MAX_RETRIES");
+    t_env_unset("HAX_HTTP_MAX_RETRIES");
 
     EXPECT(result == 0);
     EXPECT(log.n_retry == 1);
@@ -304,11 +305,11 @@ static void test_recover_redoes_attempt(void)
         "HTTP/1.1 401 Unauthorized\r\nContent-Length: 5\r\nConnection: close\r\n\r\nstale",
         SSE_OK,
     };
-    setenv("HAX_HTTP_MAX_RETRIES", "0", 1);
+    t_env_set("HAX_HTTP_MAX_RETRIES", "0");
     struct fake_stream fake = {.recover_grants = 1};
     struct event_log log = {0};
     int result = run_scripted(responses, 2, &fake, &log);
-    unsetenv("HAX_HTTP_MAX_RETRIES");
+    t_env_unset("HAX_HTTP_MAX_RETRIES");
 
     EXPECT(result == 0);
     EXPECT(fake.recover_calls == 1);
@@ -358,11 +359,11 @@ static void test_midstream_death_retried(void)
 static void test_midstream_death_budget_exhausted(void)
 {
     const char *responses[] = {SSE_OK, SSE_OK};
-    setenv("HAX_HTTP_MAX_RETRIES", "1", 1);
+    t_env_set("HAX_HTTP_MAX_RETRIES", "1");
     struct fake_stream fake = fake_tracking(-1);
     struct event_log log = {0};
     int result = run_scripted(responses, 2, &fake, &log);
-    unsetenv("HAX_HTTP_MAX_RETRIES");
+    t_env_unset("HAX_HTTP_MAX_RETRIES");
 
     /* The exhausted attempt still finalizes — the path where real parsers emit
      * the terminal "stream ended before completion" error. */
@@ -378,11 +379,11 @@ static void test_midstream_death_budget_exhausted(void)
 static void test_transport_error_keeps_captured_usage(void)
 {
     const char *responses[] = {SSE_TRUNCATED};
-    setenv("HAX_HTTP_MAX_RETRIES", "0", 1);
+    t_env_set("HAX_HTTP_MAX_RETRIES", "0");
     struct fake_stream fake = fake_tracking(7);
     struct event_log log = {0};
     int result = run_scripted(responses, 1, &fake, &log);
-    unsetenv("HAX_HTTP_MAX_RETRIES");
+    t_env_unset("HAX_HTTP_MAX_RETRIES");
 
     EXPECT(result != 0);
     EXPECT(log.n_retry == 0);
@@ -398,11 +399,11 @@ static void test_transport_error_keeps_captured_usage(void)
 static void test_transport_error_after_terminal_finalizes(void)
 {
     const char *responses[] = {SSE_TERMINAL_TRUNCATED};
-    setenv("HAX_HTTP_MAX_RETRIES", "0", 1);
+    t_env_set("HAX_HTTP_MAX_RETRIES", "0");
     struct fake_stream fake = fake_tracking(7);
     struct event_log log = {0};
     int result = run_scripted(responses, 1, &fake, &log);
-    unsetenv("HAX_HTTP_MAX_RETRIES");
+    t_env_unset("HAX_HTTP_MAX_RETRIES");
 
     EXPECT(result != 0);
     EXPECT(log.n_retry == 0);
@@ -430,8 +431,10 @@ static void test_error_message_hook(void)
 
 int main(void)
 {
+#ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
-    setenv("HAX_HTTP_RETRY_BASE", "1ms", 1);
+#endif
+    t_env_set("HAX_HTTP_RETRY_BASE", "1ms");
     test_success_first_attempt();
     test_retry_then_success();
     test_non_retryable_error();
@@ -442,6 +445,6 @@ int main(void)
     test_transport_error_keeps_captured_usage();
     test_transport_error_after_terminal_finalizes();
     test_error_message_hook();
-    unsetenv("HAX_HTTP_RETRY_BASE");
+    t_env_unset("HAX_HTTP_RETRY_BASE");
     T_REPORT();
 }

@@ -5,11 +5,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <sys/stat.h>
 
 #include "catalog.h"
+#include "catalog_fixture.h"
 #include "config.h"
 #include "effort.h"
+#include "env.h"
 #include "harness.h"
 #include "loopback.h"
 #include "model_meta.h"
@@ -20,25 +21,13 @@
 
 static void write_catalog_fixture(void)
 {
-    char *dir = t_tempdir();
-    setenv("XDG_CACHE_HOME", dir, 1);
-    char path[600];
-    snprintf(path, sizeof(path), "%s/hax", dir);
-    mkdir(path, 0755);
-    snprintf(path, sizeof(path), "%s/hax/catalog.json", dir);
-    FILE *f = fopen(path, "w");
-    EXPECT(f != NULL);
-    if (f) {
-        fputs("{\"openai\": {\"models\": {\"m\": {\"limit\": {\"context\": 64000},"
-              "\"modalities\": {\"input\": [\"text\", \"image\"]}},"
-              "\"priced\": {\"cost\": {\"input\": 2, \"output\": 8, \"cache_read\": 0.5,"
-              " \"tiers\": [{\"tier\": {\"type\": \"context\", \"size\": 200000},"
-              " \"input\": 4, \"output\": 16}]}},"
-              "\"foreign-ladder\": {\"reasoning_options\":"
-              " [{\"type\": \"effort\", \"values\": [\"minimal\", \"low\", \"high\"]}]}}}}",
-              f);
-        fclose(f);
-    }
+    t_catalog_write("{\"openai\": {\"models\": {\"m\": {\"limit\": {\"context\": 64000},"
+                    "\"modalities\": {\"input\": [\"text\", \"image\"]}},"
+                    "\"priced\": {\"cost\": {\"input\": 2, \"output\": 8, \"cache_read\": 0.5,"
+                    " \"tiers\": [{\"tier\": {\"type\": \"context\", \"size\": 200000},"
+                    " \"input\": 4, \"output\": 16}]}},"
+                    "\"foreign-ladder\": {\"reasoning_options\":"
+                    " [{\"type\": \"effort\", \"values\": [\"minimal\", \"low\", \"high\"]}]}}}}");
 }
 
 static const char *const PROVIDER_LEVELS[] = {"none", "low", "medium", "high", "xhigh"};
@@ -130,7 +119,7 @@ static void test_rates_resolution(void)
 
 static void test_context_resolution(void)
 {
-    unsetenv("HAX_CONTEXT_LIMIT");
+    t_env_unset("HAX_CONTEXT_LIMIT");
     struct provider p = make_provider("x", NULL);
 
     EXPECT(model_meta_context(&p, "m") == 0);
@@ -157,7 +146,7 @@ static void test_context_resolution(void)
 
 static void test_image_input_resolution(void)
 {
-    unsetenv("HAX_IMAGE_INPUT");
+    t_env_unset("HAX_IMAGE_INPUT");
     struct provider p = make_provider("x", NULL);
     EXPECT(model_meta_image_input(&p, "m") == -1);
     EXPECT(model_meta_image_input(NULL, NULL) == -1);
@@ -174,11 +163,11 @@ static void test_image_input_resolution(void)
     EXPECT(model_meta_image_input(&p, "m") == 0);
     EXPECT(model_meta_image_input(&p, "other") == -1);
 
-    setenv("HAX_IMAGE_INPUT", "on", 1);
+    t_env_set("HAX_IMAGE_INPUT", "on");
     EXPECT(model_meta_image_input(&p, "m") == 1);
-    setenv("HAX_IMAGE_INPUT", "auto", 1);
+    t_env_set("HAX_IMAGE_INPUT", "auto");
     EXPECT(model_meta_image_input(&p, "m") == 0);
-    unsetenv("HAX_IMAGE_INPUT");
+    t_env_unset("HAX_IMAGE_INPUT");
     model_meta_release(&p);
 }
 
@@ -306,7 +295,7 @@ static void test_snapshot_can_restore_report(void)
 
 static void test_id_only_report_is_ignored(void)
 {
-    unsetenv("HAX_CONTEXT_LIMIT");
+    t_env_unset("HAX_CONTEXT_LIMIT");
     struct provider p = make_provider("llama.cpp", list_no_efforts);
     struct model_info bare;
     model_info_init(&bare);
@@ -364,8 +353,8 @@ static void store_report(struct provider *provider, const char *model, long cont
 /* A same-model store keeps previously known fields; a different model replaces the report. */
 static void test_same_model_store_merges(void)
 {
-    unsetenv("HAX_IMAGE_INPUT");
-    unsetenv("HAX_CONTEXT_LIMIT");
+    t_env_unset("HAX_IMAGE_INPUT");
+    t_env_unset("HAX_CONTEXT_LIMIT");
     struct provider p = make_provider("llama.cpp", list_no_efforts);
     store_report(&p, "m", 32000, PROVIDER_CAP_YES);
     store_report(&p, "m", 4096, PROVIDER_CAP_UNKNOWN);
@@ -392,7 +381,7 @@ static void test_same_model_store_merges(void)
  * runtime provider id does not leak onto other providers sharing the catalog identity. */
 static void test_configured_context_beats_report(void)
 {
-    unsetenv("HAX_CONTEXT_LIMIT");
+    t_env_unset("HAX_CONTEXT_LIMIT");
     EXPECT(config_load("{\"catalog\": {\"models\": {\"codex\": {"
                        "\"m\": {\"limit\": {\"context\": 872000}}}}}}") == 0);
 
@@ -555,7 +544,7 @@ static void test_store_during_probe_keeps_costs_unknown(void)
  * must survive the probe failing. */
 static void test_incomplete_report_still_probes(void)
 {
-    unsetenv("HAX_IMAGE_INPUT");
+    t_env_unset("HAX_IMAGE_INPUT");
     struct provider p = make_provider("llama.cpp", list_no_efforts);
     p.probe_model = counting_probe;
     probe_calls = 0;

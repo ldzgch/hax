@@ -2,6 +2,8 @@
 #ifndef HAX_TERMINAL_UI_H
 #define HAX_TERMINAL_UI_H
 
+#include "format_attr.h"
+
 /* User-facing status lines and listing rows, printed to stdout so they interleave with the
  * on-screen conversation. Not for startup/CLI errors, which print "hax: ..." to stderr before the
  * REPL exists (hax_err() in diag.h), nor for mid-stream provider errors, which flow through the
@@ -10,8 +12,8 @@
 /* One status line: ui_error (red) reports a failure, ui_note (dim) an informational aside. Color
  * is gated on stdout being a TTY; the trailing newline is appended. Callers pass a printf-style
  * message with no color codes and no newline. */
-__attribute__((format(printf, 1, 2))) void ui_error(const char *fmt, ...);
-__attribute__((format(printf, 1, 2))) void ui_note(const char *fmt, ...);
+__attribute__((format(HAX_PRINTF_FORMAT, 1, 2))) void ui_error(const char *fmt, ...);
+__attribute__((format(HAX_PRINTF_FORMAT, 1, 2))) void ui_note(const char *fmt, ...);
 
 /* Word-wrapped listing rows. Style arguments are resolved open sequences (theme_open(), ANSI_DIM,
  * or "" for unstyled); an empty open suppresses the closing reset too, so colorless output

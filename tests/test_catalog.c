@@ -4,31 +4,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include "catalog.h"
+#include "catalog_fixture.h"
 #include "config.h"
 #include "effort.h"
+#include "env.h"
 #include "harness.h"
-
-/* Point the cache tier at a private temp tree and write `json` as the cached snapshot. */
-static void write_cache_fixture(const char *json)
-{
-    static char *dir;
-    if (!dir) {
-        dir = t_tempdir();
-        setenv("XDG_CACHE_HOME", dir, 1);
-    }
-    char path[512];
-    snprintf(path, sizeof(path), "%s/hax", dir);
-    mkdir(path, 0755);
-    snprintf(path, sizeof(path), "%s/hax/catalog.json", dir);
-    FILE *f = fopen(path, "w");
-    if (!f)
-        FAIL("fopen %s: %s", path, strerror(errno));
-    fputs(json, f);
-    fclose(f);
-}
 
 static void test_entry_init(void)
 {
@@ -520,24 +502,24 @@ static void test_tier_only_entry(void)
 static void test_prefetch_disabled_is_noop(void)
 {
     /* Opting out of refreshes also opts out of stale-snapshot warnings. */
-    setenv("HAX_CATALOG_URL", "", 1);
+    t_env_set("HAX_CATALOG_URL", "");
     catalog_prefetch();
     EXPECT(catalog_stale_days() == 0);
     catalog_prefetch(); /* once-latched, still safe */
     EXPECT(catalog_stale_days() == 0);
     catalog_shutdown();
-    unsetenv("HAX_CATALOG_URL");
+    t_env_unset("HAX_CATALOG_URL");
 }
 
 /* The models.dev SDK selector maps to the wire dialect a gateway model speaks, the per-model
  * override winning over the provider-wide default. */
 static void test_wire_api_hints(void)
 {
-    write_cache_fixture("{\"zen-hint\": {\"npm\": \"@ai-sdk/openai-compatible\", \"models\": {"
-                        "\"basic\": {\"cost\": {\"input\": 1, \"output\": 2}},"
-                        "\"claude-x\": {\"provider\": {\"npm\": \"@ai-sdk/anthropic\"}},"
-                        "\"gpt-x\": {\"provider\": {\"npm\": \"@ai-sdk/openai\"}},"
-                        "\"gem-x\": {\"provider\": {\"npm\": \"@ai-sdk/google\"}}}}}");
+    t_catalog_write("{\"zen-hint\": {\"npm\": \"@ai-sdk/openai-compatible\", \"models\": {"
+                    "\"basic\": {\"cost\": {\"input\": 1, \"output\": 2}},"
+                    "\"claude-x\": {\"provider\": {\"npm\": \"@ai-sdk/anthropic\"}},"
+                    "\"gpt-x\": {\"provider\": {\"npm\": \"@ai-sdk/openai\"}},"
+                    "\"gem-x\": {\"provider\": {\"npm\": \"@ai-sdk/google\"}}}}}");
 
     struct catalog_entry entry;
     EXPECT(catalog_lookup(NULL, "zen-hint", "basic", &entry) == 0);
@@ -552,7 +534,7 @@ static void test_wire_api_hints(void)
     catalog_lookup(NULL, "zen-hint", "absent", &entry);
     EXPECT(entry.api == NULL);
 
-    write_cache_fixture(CACHE_FIXTURE); /* later tests re-parse the shared snapshot */
+    t_catalog_write(CACHE_FIXTURE); /* later tests re-parse the shared snapshot */
 }
 
 /* The `interleaved` hint names the member an assistant turn's reasoning replays under. Only
@@ -560,14 +542,14 @@ static void test_wire_api_hints(void)
  * with text, so it must read as "no replay" rather than as a field name. */
 static void test_interleaved_hints(void)
 {
-    write_cache_fixture("{\"zen-think\": {\"npm\": \"@ai-sdk/openai-compatible\", \"models\": {"
-                        "\"content\": {\"interleaved\": {\"field\": \"reasoning_content\"}},"
-                        "\"plain\": {\"interleaved\": {\"field\": \"Reasoning\"}},"
-                        "\"bare\": {\"interleaved\": \"reasoning_content\"},"
-                        "\"details\": {\"interleaved\": {\"field\": \"reasoning_details\"}},"
-                        "\"toggle\": {\"interleaved\": true},"
-                        "\"off\": {\"interleaved\": false},"
-                        "\"quiet\": {\"cost\": {\"input\": 1, \"output\": 2}}}}}");
+    t_catalog_write("{\"zen-think\": {\"npm\": \"@ai-sdk/openai-compatible\", \"models\": {"
+                    "\"content\": {\"interleaved\": {\"field\": \"reasoning_content\"}},"
+                    "\"plain\": {\"interleaved\": {\"field\": \"Reasoning\"}},"
+                    "\"bare\": {\"interleaved\": \"reasoning_content\"},"
+                    "\"details\": {\"interleaved\": {\"field\": \"reasoning_details\"}},"
+                    "\"toggle\": {\"interleaved\": true},"
+                    "\"off\": {\"interleaved\": false},"
+                    "\"quiet\": {\"cost\": {\"input\": 1, \"output\": 2}}}}}");
 
     struct catalog_entry entry;
     EXPECT(catalog_lookup(NULL, "zen-think", "content", &entry) == 0);
@@ -604,7 +586,7 @@ static void test_interleaved_hints(void)
     EXPECT(catalog_lookup(NULL, "zen-think", "content", &entry) == 0);
     EXPECT_STR_EQ(entry.interleaved_field, "reasoning_content");
 
-    write_cache_fixture(CACHE_FIXTURE); /* later tests re-parse the shared snapshot */
+    t_catalog_write(CACHE_FIXTURE); /* later tests re-parse the shared snapshot */
 }
 
 /* catalog.models can pin a model's api like any other catalog field, normalized to the
@@ -612,9 +594,9 @@ static void test_interleaved_hints(void)
  * cache-only api hint instead of silently defaulting the wire. */
 static void test_config_api_override(void)
 {
-    write_cache_fixture("{\"zen-api\": {\"npm\": \"@ai-sdk/openai-compatible\", \"models\": {"
-                        "\"pinned\": {\"provider\": {\"npm\": \"@ai-sdk/anthropic\"}},"
-                        "\"priced\": {\"provider\": {\"npm\": \"@ai-sdk/anthropic\"}}}}}");
+    t_catalog_write("{\"zen-api\": {\"npm\": \"@ai-sdk/openai-compatible\", \"models\": {"
+                    "\"pinned\": {\"provider\": {\"npm\": \"@ai-sdk/anthropic\"}},"
+                    "\"priced\": {\"provider\": {\"npm\": \"@ai-sdk/anthropic\"}}}}}");
     EXPECT(config_load("{\"catalog\": {\"models\": {\"zen-api\": {"
                        "  \"pinned\": {\"api\": \"OpenAI-Responses\"},"
                        "  \"typo\": {\"api\": \"anthropic-mesages\"},"
@@ -637,7 +619,7 @@ static void test_config_api_override(void)
     EXPECT_STR_EQ(entry.api, "anthropic-messages");
 
     config_load(NULL);
-    write_cache_fixture(CACHE_FIXTURE);
+    t_catalog_write(CACHE_FIXTURE);
 }
 
 static void test_memoization_and_shutdown_clear(void)
@@ -647,8 +629,8 @@ static void test_memoization_and_shutdown_clear(void)
     struct catalog_entry entry;
     EXPECT(catalog_lookup(NULL, "openai", "o3", &entry) == 0);
     EXPECT(entry.cost_input == 2);
-    write_cache_fixture("{\"openai\": {\"models\": {"
-                        "\"o3\": {\"cost\": {\"input\": 5, \"output\": 8}}}}}");
+    t_catalog_write("{\"openai\": {\"models\": {"
+                    "\"o3\": {\"cost\": {\"input\": 5, \"output\": 8}}}}}");
     EXPECT(catalog_lookup(NULL, "openai", "o3", &entry) == 0);
     EXPECT(entry.cost_input == 2); /* memo hit, not the rewritten file */
     catalog_shutdown();            /* joins workers, clears the memo */
@@ -658,7 +640,7 @@ static void test_memoization_and_shutdown_clear(void)
 
 int main(void)
 {
-    write_cache_fixture(CACHE_FIXTURE);
+    t_catalog_write(CACHE_FIXTURE);
 
     test_entry_init();
     test_lookup_from_cache();

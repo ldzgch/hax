@@ -22,6 +22,11 @@ if host_machine.system() == 'linux'
     )
 endif
 
+if host_machine.system() == 'windows'
+    add_project_arguments('-D_WIN32_WINNT=0x0a00', '-DNTDDI_VERSION=0x0a000006',
+        '-D__USE_MINGW_ANSI_STDIO=1', language: 'c')
+endif
+
 add_project_arguments(
     '-D_DARWIN_C_SOURCE',
     # Project headers go through -iquote, not -I, so `#include <foo.h>` always reaches a system
@@ -34,10 +39,45 @@ add_project_arguments(
 
 # include_type system turns the dependencies' -I flags into -isystem, so clang-tidy doesn't report
 # findings inside third-party headers (Homebrew installs them outside the default include path).
-libcurl = dependency('libcurl', include_type: 'system')
-# >=2.13 for json_object_update_recursive.
-jansson = dependency('jansson', version: '>=2.13', include_type: 'system')
-threads = dependency('threads')
+if host_machine.system() == 'windows'
+    # Native CMake installs expose their imported targets, including static-link system libraries.
+    libcurl = dependency('libcurl', method: 'pkg-config', required: false, include_type: 'system')
+    if not libcurl.found()
+        libcurl = dependency('CURL', method: 'cmake', modules: ['CURL::libcurl'], include_type: 'system')
+    endif
+    jansson = dependency('jansson', version: '>=2.13', method: 'pkg-config', required: false,
+        include_type: 'system')
+    if not jansson.found()
+        jansson = dependency('jansson', version: '>=2.13', method: 'cmake',
+            modules: ['jansson::jansson'], include_type: 'system')
+    endif
+else
+    libcurl = dependency('libcurl', include_type: 'system')
+    # >=2.13 for json_object_update_recursive.
+    jansson = dependency('jansson', version: '>=2.13', include_type: 'system')
+endif
+if host_machine.system() == 'windows'
+    # Keep the native executable runnable without the toolchain's DLL directory on PATH.
+    threads = meson.get_compiler('c').find_library('winpthread', static: true)
+else
+    threads = dependency('threads')
+endif
+platform_deps = []
+if host_machine.system() == 'windows'
+    platform_deps += meson.get_compiler('c').find_library('bcrypt')
+    platform_deps += meson.get_compiler('c').find_library('shell32')
+    platform_deps += meson.get_compiler('c').find_library('advapi32')
+    platform_deps += meson.get_compiler('c').find_library('user32')
+    platform_deps += meson.get_compiler('c').find_library('gdi32')
+    platform_deps += meson.get_compiler('c').find_library('ole32')
+    platform_deps += meson.get_compiler('c').find_library('windowscodecs')
+    platform_deps += meson.get_compiler('c').find_library('uuid')
+    # Static libcurl's Schannel and socket dependencies are not propagated by older CMake parsers.
+    platform_deps += meson.get_compiler('c').find_library('crypt32')
+    platform_deps += meson.get_compiler('c').find_library('secur32')
+    platform_deps += meson.get_compiler('c').find_library('ws2_32')
+    platform_deps += meson.get_compiler('c').find_library('iphlpapi')
+endif
 
 # FreeBSD resolves isfinite() to a libm symbol rather than a compiler builtin, so the math library
 # must be linked there. Optional because platforms that fold libm into libc ship none.
@@ -69,6 +109,10 @@ version_h = vcs_tag(
 # Production sources, grouped by subdirectory and sorted within each group. `main.c` is left out on
 # purpose: it lives only in the `hax` executable, so test binaries, which bring their own `main`,
 # can link the same objects through `hax_lib` without colliding.
+fs_source = host_machine.system() == 'windows' ? 'src/system/fs_win.c' : 'src/system/fs.c'
+spawn_source = host_machine.system() == 'windows' ? 'src/system/spawn_win.c' : 'src/system/spawn.c'
+interrupt_source = host_machine.system() == 'windows' ? 'src/terminal/interrupt_win.c' : 'src/terminal/interrupt.c'
+clipboard_source = host_machine.system() == 'windows' ? 'src/terminal/clipboard_win.c' : 'src/terminal/clipboard.c'
 sources = files(
     'src/agent.c',
     'src/agent_core.c',
@@ -98,6 +142,8 @@ sources = files(
     'src/provider.c',
     'src/select.c',
     'src/session.c',
+    'src/session_paths.c',
+    'src/session_storage.c',
     'src/session_picker.c',
     'src/session_prune.c',
     'src/slash.c',
@@ -148,24 +194,36 @@ sources = files(
     'src/system/browser.c',
     'src/system/clock.c',
     'src/system/fd.c',
-    'src/system/fs.c',
+    'src/system/file_lock.c',
+    'src/system/line_reader.c',
+    fs_source,
+    'src/system/fs_append.c',
+    'src/system/fs_private.c',
+    'src/system/fs_read.c',
+    'src/system/fs_shell.c',
     'src/system/git.c',
     'src/system/keepawake.c',
     'src/system/locale.c',
     'src/system/os.c',
     'src/system/path.c',
     'src/system/rand.c',
-    'src/system/spawn.c',
+    'src/system/socket.c',
+    spawn_source,
+    'src/system/spawn_locale.c',
+    'src/system/stream_capture.c',
     'src/system/tempfiles.c',
 
-    'src/terminal/clipboard.c',
+    clipboard_source,
+    'src/terminal/clipboard_osc52.c',
     'src/terminal/input.c',
     'src/terminal/input_core.c',
-    'src/terminal/interrupt.c',
+    interrupt_source,
+    'src/terminal/interrupt_classifier.c',
     'src/terminal/notify.c',
     'src/terminal/picker.c',
     'src/terminal/picker_core.c',
     'src/terminal/theme.c',
+    'src/terminal/tty.c',
     'src/terminal/ui.c',
     'src/terminal/vt_resolve.c',
     'src/terminal/width.c',
@@ -177,9 +235,12 @@ sources = files(
     'src/text/fmt.c',
     'src/text/frontmatter.c',
     'src/text/json_scan.c',
+    'src/text/glob.c',
     'src/text/placeholder.c',
     'src/text/sha256.c',
     'src/text/shell_quote.c',
+    'src/text/windows_argv.c',
+    'src/text/unicode_cells.c',
     'src/text/url.c',
     'src/text/utf8.c',
     'src/text/utf8_sanitize.c',
@@ -209,6 +270,19 @@ sources = files(
     'src/transport/sse.c',
 )
 
+if host_machine.system() == 'windows'
+    sources += files(
+        'src/session_prune_win.c',
+        'src/system/win_bash.c',
+        'src/system/win_error.c',
+        'src/system/win_process.c',
+        'src/tools/bash_process_win.c',
+        'src/system/win_security.c',
+        'src/system/win_utf8.c',
+        'src/terminal/win_keys.c',
+    )
+endif
+
 # One archive shared by the executable and every test. Static-archive linking is lazy: each
 # consumer pulls only the objects it transitively references, so tests get exactly the closure
 # they need without hand-listing sources. Named apart from the `hax` executable so
@@ -216,7 +290,7 @@ sources = files(
 hax_lib = static_library('hax_lib',
     sources,
     version_h,
-    dependencies: [libcurl, jansson, threads, libm],
+    dependencies: [libcurl, jansson, threads, libm] + platform_deps,
 )
 
 # Consumers need the link against `hax_lib` and, for their own translation units (`main.c`, each

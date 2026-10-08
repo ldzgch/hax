@@ -1,9 +1,18 @@
 /* SPDX-License-Identifier: MIT */
 #include "tools/bash_env.h"
 
+#include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <wchar.h>
+
+#include "system/win_error.h"
+#include "system/win_utf8.h"
+#endif
 
 #include "xalloc.h"
 #include "text/fmt.h"
@@ -63,7 +72,11 @@ void bash_env_set_selection(const char *provider, const char *model, const char 
 static int entry_has_name(const char *entry, const char *name)
 {
     size_t name_len = strlen(name);
+#ifdef _WIN32
+    return _strnicmp(entry, name, name_len) == 0 && entry[name_len] == '=';
+#else
     return strncmp(entry, name, name_len) == 0 && entry[name_len] == '=';
+#endif
 }
 
 static int entry_is_overridden(const char *entry, const char *const *dynamic, size_t dynamic_count)
@@ -75,7 +88,12 @@ static int entry_is_overridden(const char *entry, const char *const *dynamic, si
     for (size_t i = 0; i < dynamic_count; i++) {
         const char *separator = strchr(dynamic[i], '=');
         size_t name_len = (size_t)(separator - dynamic[i]);
-        if (strncmp(entry, dynamic[i], name_len) == 0 && entry[name_len] == '=')
+#ifdef _WIN32
+        int matches = _strnicmp(entry, dynamic[i], name_len) == 0;
+#else
+        int matches = strncmp(entry, dynamic[i], name_len) == 0;
+#endif
+        if (matches && entry[name_len] == '=')
             return 1;
     }
     return 0;
@@ -99,10 +117,38 @@ static const char *subagent_depth_assignment(void)
 
 char **bash_build_child_env(void)
 {
+#ifdef _WIN32
+    wchar_t *native = GetEnvironmentStringsW();
+    if (!native) {
+        win_error_set_errno(GetLastError());
+        return NULL;
+    }
+    size_t native_count = 0;
+    for (const wchar_t *cursor = native; *cursor; cursor += wcslen(cursor) + 1)
+        native_count++;
+    char **inherited = xcalloc(native_count + 1, sizeof(*inherited));
+    size_t converted = 0;
+    for (const wchar_t *cursor = native; *cursor; cursor += wcslen(cursor) + 1) {
+        inherited[converted] = win_utf8_from_wide(cursor);
+        if (!inherited[converted]) {
+            int saved_errno = errno;
+            for (size_t i = 0; i < converted; i++)
+                free(inherited[i]);
+            free(inherited);
+            FreeEnvironmentStringsW(native);
+            errno = saved_errno;
+            return NULL;
+        }
+        converted++;
+    }
+    FreeEnvironmentStringsW(native);
+#else
     extern char **environ;
+    char **inherited = environ;
+#endif
 
     size_t inherited_count = 0;
-    while (environ[inherited_count])
+    while (inherited[inherited_count])
         inherited_count++;
 
     size_t dynamic_count = selection_count + 1;
@@ -115,9 +161,9 @@ char **bash_build_child_env(void)
     char **child_env =
         xmalloc((inherited_count + fixed_count + dynamic_count + 1) * sizeof(*child_env));
     size_t child_count = 0;
-    for (size_t i = 0; environ[i]; i++) {
-        if (!entry_is_overridden(environ[i], dynamic, dynamic_count))
-            child_env[child_count++] = environ[i];
+    for (size_t i = 0; inherited[i]; i++) {
+        if (!entry_is_overridden(inherited[i], dynamic, dynamic_count))
+            child_env[child_count++] = inherited[i];
     }
     for (size_t i = 0; i < fixed_count; i++)
         child_env[child_count++] = (char *)FIXED_OVERRIDES[i].assignment;
@@ -125,6 +171,38 @@ char **bash_build_child_env(void)
         child_env[child_count++] = (char *)dynamic[i];
     child_env[child_count] = NULL;
 
+    /* One allocation owns both the vector and its strings, preserving the caller's free(envp). */
+    size_t pointer_bytes = (child_count + 1) * sizeof(*child_env);
+    size_t total = pointer_bytes;
+    int overflow = 0;
+    for (size_t i = 0; i < child_count; i++) {
+        size_t length = strlen(child_env[i]) + 1;
+        if (length > SIZE_MAX - total) {
+            overflow = 1;
+            break;
+        }
+        total += length;
+    }
+    char **owned = NULL;
+    if (!overflow) {
+        owned = xmalloc(total);
+        char *cursor = (char *)owned + pointer_bytes;
+        for (size_t i = 0; i < child_count; i++) {
+            size_t length = strlen(child_env[i]) + 1;
+            memcpy(cursor, child_env[i], length);
+            owned[i] = cursor;
+            cursor += length;
+        }
+        owned[child_count] = NULL;
+    }
     free(dynamic);
-    return child_env;
+    free(child_env);
+#ifdef _WIN32
+    for (size_t i = 0; i < inherited_count; i++)
+        free(inherited[i]);
+    free(inherited);
+#endif
+    if (overflow)
+        errno = EOVERFLOW;
+    return owned;
 }

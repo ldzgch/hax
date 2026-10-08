@@ -58,8 +58,16 @@ static void test_zero_sized_allocations(void)
     free(realloc_result);
 }
 
+static void test_c99_formatting(void)
+{
+    char *text = xasprintf("%zu %td %lld", (size_t)42, (ptrdiff_t)-3, 4294967296LL);
+    EXPECT_STR_EQ(text, "42 -3 4294967296");
+    free(text);
+}
+
 int main(void)
 {
+    test_c99_formatting();
     test_string_array_concat();
     test_string_array_count();
     test_zero_sized_allocations();

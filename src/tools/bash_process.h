@@ -2,7 +2,7 @@
 #ifndef HAX_TOOLS_BASH_PROCESS_H
 #define HAX_TOOLS_BASH_PROCESS_H
 
-#include <sys/types.h>
+#include <stdint.h>
 
 #include "tool.h"
 
@@ -14,20 +14,36 @@
 char *bash_run_command(const char *command, long timeout_ms, int background, const char *name,
                        struct tool_run_ctx *ctx);
 
-/* Signal the command's process group, falling back to the pid when the group is not yet (or no
- * longer) alive. The pid must be unreaped. */
-void bash_signal_process_tree(pid_t pid, int signal_number);
+struct shell_process {
+    intptr_t pid; /* POSIX pid or owned native process token */
+    int output_fd;
+};
 
-/* Observe the shell's exit without reaping it, so the zombie keeps the pid and process group
- * reserved for signaling. Sets *exit_seen on exit; returns waitid's result. */
-int bash_process_exit_seen(pid_t pid, int *exit_seen);
+/* Start a shell with merged binary stdout/stderr and closed stdin. Return an allocated error,
+ * or NULL after publishing the owned process for fatal cleanup. */
+char *bash_start_shell(const char *command, struct shell_process *process);
 
-/* Fatal-signal cleanup registry of live shell process groups. Shells are published at spawn and
- * retracted before the reap that frees the pid for reuse, so a handler firing in between can
- * only ever signal a group hax still owns. Publish/retract run on the tool-dispatch thread;
- * kill is async-signal-safe and may run from a signal handler. */
-void bash_shell_pgid_publish(pid_t pid);
-void bash_shell_pgid_retract(pid_t pid);
+/* Wait for the leader and release its process resources after retracting fatal cleanup.
+ * Returns 0 on success or -1 with errno; status uses native platform encoding. */
+int bash_process_wait(intptr_t pid, int *status);
+
+/* Stop an owned tree. POSIX sends signal_number to the group, falling back to its unreaped
+ * leader. Windows terminates the owned job immediately regardless of signal_number. */
+void bash_signal_process_tree(intptr_t pid, int signal_number);
+
+/* Observe the leader without releasing its ownership. Set *exit_seen on exit; return 0 or -1
+ * with errno. The process remains signalable until bash_process_wait releases it. */
+int bash_process_exit_seen(intptr_t pid, int *exit_seen);
+
+/* Terminate published owned shell trees during fatal cleanup. POSIX is async-signal-safe;
+ * Windows serializes the console-control handler with native process release. */
 void bash_shell_pgids_kill(void);
+
+#ifndef _WIN32
+/* Publish at spawn and retract before reaping, keeping the pid reserved during fatal cleanup.
+ * These operations run on the tool-dispatch thread. */
+void bash_shell_pgid_publish(intptr_t pid);
+void bash_shell_pgid_retract(intptr_t pid);
+#endif
 
 #endif /* HAX_TOOLS_BASH_PROCESS_H */

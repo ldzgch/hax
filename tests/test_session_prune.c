@@ -7,11 +7,15 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "env.h"
+#include "files.h"
 #include "harness.h"
 #include "provider.h"
 #include "session.h"
 #include "session_prune.h"
 #include "xalloc.h"
+#include "system/clock.h"
+#include "system/fs.h"
 #include "system/path.h"
 
 static struct item ONE_TURN[] = {
@@ -32,11 +36,11 @@ static void fixture_init(struct fixture *f)
     char *projects = t_tempdir();
     f->project_a = xasprintf("%s/one", projects);
     f->project_b = xasprintf("%s/two", projects);
-    EXPECT(mkdir(f->project_a, 0700) == 0);
-    EXPECT(mkdir(f->project_b, 0700) == 0);
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
-    setenv("HAX_SESSION_RETENTION_DAYS", "30", 1);
-    unsetenv("HAX_NO_SESSION");
+    EXPECT(t_mkdir(f->project_a, 0700) == 0);
+    EXPECT(t_mkdir(f->project_b, 0700) == 0);
+    t_env_set("XDG_STATE_HOME", t_tempdir());
+    t_env_set("HAX_SESSION_RETENTION_DAYS", "30");
+    t_env_unset("HAX_NO_SESSION");
     EXPECT(chdir(f->project_a) == 0);
 }
 
@@ -66,8 +70,7 @@ static char *write_session(const char *cwd, struct session_log **keep_open)
 
 static void set_mtime(const char *path, time_t when)
 {
-    struct timespec ts[2] = {{.tv_sec = when}, {.tv_sec = when}};
-    EXPECT(utimensat(AT_FDCWD, path, ts, 0) == 0);
+    EXPECT(t_file_set_mtime(path, (int64_t)when) == 0);
 }
 
 static char *parent_path(const char *path)
@@ -105,7 +108,7 @@ static void test_listing_hides_expired_sessions(void)
         EXPECT_STR_EQ(list[0].path, recent_path);
     session_list_free(list, n);
 
-    setenv("HAX_SESSION_RETENTION_DAYS", "0", 1);
+    t_env_set("HAX_SESSION_RETENTION_DAYS", "0");
     session_list(f.project_a, &list, &n);
     EXPECT(n == 2);
     session_list_free(list, n);
@@ -189,13 +192,24 @@ static void test_sweep_leaves_unrelated_entries_untouched(void)
     char *session_path = write_session(f.project_a, NULL);
     char *bucket = parent_path(session_path);
     char *unrelated = xasprintf("%s/backup_00000000-0000-4000-8000-000000000000.jsonl", bucket);
-    int fd = open(unrelated, O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+    int fd = fs_open_private(unrelated, 1);
     EXPECT(fd >= 0);
     if (fd >= 0)
         close(fd);
     char *link =
         xasprintf("%s/2000-01-01T00-00-00Z_00000000-0000-4000-8000-000000000001.jsonl", bucket);
-    EXPECT(symlink(session_path, link) == 0);
+    if (t_symlink(session_path, link, 0) < 0) {
+        int missing_privilege = errno == EPERM;
+        free(link);
+        free(unrelated);
+        free(bucket);
+        free(session_path);
+        fixture_free(&f);
+        if (missing_privilege)
+            T_SKIP("symlink creation requires Developer Mode or symlink privilege");
+        FAIL("%s", "cannot create symlink");
+        return;
+    }
     EXPECT(session_path_is_standard(session_path));
     EXPECT(!session_path_is_standard(unrelated));
     EXPECT(session_path_is_standard(link));
@@ -206,8 +220,7 @@ static void test_sweep_leaves_unrelated_entries_untouched(void)
     EXPECT(session_prune_before(time(NULL) - 30 * 24 * 60 * 60, NULL) == 0);
     expect_missing(session_path);
     EXPECT(access(unrelated, F_OK) == 0);
-    struct stat lst;
-    EXPECT(lstat(link, &lst) == 0 && S_ISLNK(lst.st_mode));
+    EXPECT(t_file_is_symlink(link));
 
     free(link);
     free(unrelated);
@@ -252,8 +265,7 @@ static void test_background_sweep_marks_only_completion(void)
             completed = 1;
             break;
         }
-        struct timespec pause = {.tv_nsec = 10 * 1000 * 1000};
-        nanosleep(&pause, NULL);
+        clock_sleep_ms(10);
     }
     session_prune_shutdown();
     EXPECT(completed);

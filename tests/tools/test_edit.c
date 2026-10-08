@@ -4,7 +4,9 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "files.h"
 #include "harness.h"
+#include "pipe.h"
 #include "tool.h"
 #include "xalloc.h"
 #include "system/fs.h"
@@ -12,10 +14,7 @@
 static char *seed_file(const char *dir, const char *name, const char *content)
 {
     char *path = xasprintf("%s/%s", dir, name);
-    FILE *f = fopen(path, "w");
-    EXPECT(f != NULL);
-    fputs(content, f);
-    fclose(f);
+    EXPECT(fs_write_atomic(path, content, strlen(content), 0) == 0);
     return path;
 }
 
@@ -177,25 +176,39 @@ static void test_edit_multiline_match(void)
     free(path);
 }
 
-static void test_edit_refuses_fifo(void)
+static void test_edit_unicode_path_preserves_line_endings(void)
 {
-    /* A blocking read from a writer-less FIFO never returns, so reject it as non-regular before
-     * reading. */
-    char *dir = t_tempdir();
-    char *path = xasprintf("%s/pipe", dir);
-    EXPECT(mkfifo(path, 0644) == 0);
+    char *path = seed_file(t_tempdir(), "\xe6\x96\x87-\xc3\xa9.txt", "alpha\r\nbravo\n");
+    json_t *arguments =
+        json_pack("{s:s,s:s,s:s}", "path", path, "old_string", "alpha", "new_string", "changed");
+    char *args = json_dumps(arguments, JSON_COMPACT);
+    json_decref(arguments);
+    char *out = TOOL_EDIT.run(args, NULL);
+    EXPECT(strstr(out, "+changed") != NULL);
+    char *got = read_file(path);
+    EXPECT_STR_EQ(got, "changed\r\nbravo\n");
+    free(got);
+    free(out);
+    free(args);
+    free(path);
+}
 
-    char *args = xasprintf("{\"path\":\"%s\",\"old_string\":\"a\",\"new_string\":\"b\"}", path);
+static void test_edit_refuses_pipe(void)
+{
+    struct t_pipe *pipe = t_pipe_create();
+    EXPECT(pipe != NULL);
+    if (!pipe)
+        return;
+    json_t *arguments =
+        json_pack("{s:s,s:s,s:s}", "path", t_pipe_path(pipe), "old_string", "a", "new_string", "b");
+    char *args = json_dumps(arguments, JSON_COMPACT);
+    json_decref(arguments);
     char *out = TOOL_EDIT.run(args, NULL);
     free(args);
     EXPECT(strstr(out, "not a regular file") != NULL);
     free(out);
-
-    struct stat st;
-    EXPECT(stat(path, &st) == 0);
-    EXPECT(S_ISFIFO(st.st_mode));
-
-    free(path);
+    EXPECT(t_pipe_exists(pipe));
+    t_pipe_close(pipe);
 }
 
 static void test_edit_nonexistent_file(void)
@@ -220,7 +233,8 @@ int main(void)
     test_edit_replace_all();
     test_edit_deletes_entire_content();
     test_edit_multiline_match();
-    test_edit_refuses_fifo();
+    test_edit_refuses_pipe();
+    test_edit_unicode_path_preserves_line_endings();
     test_edit_nonexistent_file();
     T_REPORT();
 }

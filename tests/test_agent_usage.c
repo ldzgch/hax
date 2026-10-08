@@ -3,9 +3,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include "agent_usage.h"
+#include "catalog_fixture.h"
+#include "env.h"
 #include "harness.h"
 #include "model_meta.h"
 #include "provider.h"
@@ -15,23 +16,10 @@ static const struct provider CATALOG_PROVIDER = {.catalog_id = "prov"};
 /* Catalog misses are memoized, so install the fixture before any pricing call. */
 static void install_catalog(void)
 {
-    char *dir = t_tempdir();
-    setenv("XDG_CACHE_HOME", dir, 1);
-
-    char path[600];
-    snprintf(path, sizeof(path), "%s/hax", dir);
-    mkdir(path, 0755);
-    snprintf(path, sizeof(path), "%s/hax/catalog.json", dir);
-    FILE *file = fopen(path, "w");
-    EXPECT(file != NULL);
-    if (!file)
-        return;
-    fputs("{\"prov\": {\"models\": {"
-          "\"m\": {\"cost\": {\"input\": 2, \"output\": 8}},"
-          "\"free-m\": {\"cost\": {\"input\": 0, \"output\": 0}}"
-          "}}}",
-          file);
-    fclose(file);
+    t_catalog_write("{\"prov\": {\"models\": {"
+                    "\"m\": {\"cost\": {\"input\": 2, \"output\": 8}},"
+                    "\"free-m\": {\"cost\": {\"input\": 0, \"output\": 0}}"
+                    "}}}");
 }
 
 static struct stream_usage usage(long input, long output, long cached, double cost)

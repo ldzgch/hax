@@ -102,8 +102,8 @@ def check_includes(path: Path, text: str) -> Iterator[Finding]:
         if local.is_file():
             for root in ROOTS:
                 if local.is_relative_to(root):
-                    canonical = local.relative_to(root)
-                    if str(canonical) != include:
+                    canonical = local.relative_to(root).as_posix()
+                    if canonical != include:
                         yield Finding(path, lineno, f'include "{include}" should be "{canonical}"')
                     break
         elif not any(

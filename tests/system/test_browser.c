@@ -1,16 +1,20 @@
 /* SPDX-License-Identifier: MIT */
 #include <stdio.h>
+#ifndef _WIN32
 #include <stdlib.h>
 #include <time.h>
 #include <sys/stat.h>
+#endif
 
 #include "harness.h"
+#ifndef _WIN32
 #include "xalloc.h"
 #include "system/browser.h"
 #include "system/fs.h"
+#endif
 
-/* Both platform opener names point at the same recorder so the test is platform-independent.
- * The recording is published by rename, so a poll never observes a partially written file. */
+#ifndef _WIN32
+/* The recording is published by rename, so a poll never observes a partially written file. */
 static void write_fake_opener(const char *dir, const char *name, const char *out_path)
 {
     char *path = xasprintf("%s/%s", dir, name);
@@ -54,9 +58,18 @@ static void test_hands_url_to_opener(void)
     free(recorded);
     free(out_path);
 }
+#endif
 
 int main(void)
 {
+#ifdef _WIN32
+    fprintf(stderr,
+            "%s:%d: skip: ShellExecuteW handoff requires an interactive Windows shell "
+            "to observe\n",
+            __FILE__, __LINE__);
+    t_skips++;
+#else
     test_hands_url_to_opener();
+#endif
     T_REPORT();
 }

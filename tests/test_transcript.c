@@ -3,52 +3,57 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "config.h"
+#include "env.h"
 #include "harness.h"
 #include "provider.h"
 #include "transcript.h"
+#include "system/fs.h"
 #include "system/locale.h"
+#include "system/path.h"
+#include "system/stream_capture.h"
 #include "terminal/ansi.h"
 
 static char *render_to_string(const char *system_prompt, const struct item *items, size_t n_items)
 {
-    char *output = NULL;
-    size_t output_length = 0;
-    FILE *stream = open_memstream(&output, &output_length);
-    if (!stream) {
-        perror("open_memstream");
+    struct stream_capture capture;
+    if (stream_capture_open(&capture) < 0) {
+        perror("stream_capture_open");
         exit(1);
     }
+    FILE *stream = capture.stream;
     transcript_render(stream, system_prompt, NULL, 0, items, n_items);
-    fclose(stream);
+    char *output = stream_capture_finish(&capture, NULL);
+    EXPECT(output != NULL);
     return output;
 }
 
 static char *render_with_tools(const struct tool_def *tools, size_t n_tools)
 {
-    char *output = NULL;
-    size_t output_length = 0;
-    FILE *stream = open_memstream(&output, &output_length);
-    if (!stream) {
-        perror("open_memstream");
+    struct stream_capture capture;
+    if (stream_capture_open(&capture) < 0) {
+        perror("stream_capture_open");
         exit(1);
     }
+    FILE *stream = capture.stream;
     transcript_render(stream, NULL, tools, n_tools, NULL, 0);
-    fclose(stream);
+    char *output = stream_capture_finish(&capture, NULL);
+    EXPECT(output != NULL);
     return output;
 }
 
 static char *render_item_range(enum transcript_render_mode mode, const struct item *items,
                                size_t n_items, size_t first_item, int *turn_number)
 {
-    char *output = NULL;
-    size_t output_length = 0;
-    FILE *stream = open_memstream(&output, &output_length);
-    if (!stream) {
-        perror("open_memstream");
+    struct stream_capture capture;
+    if (stream_capture_open(&capture) < 0) {
+        perror("stream_capture_open");
         exit(1);
     }
+    FILE *stream = capture.stream;
     transcript_render_items(stream, mode, items, n_items, first_item, turn_number);
-    fclose(stream);
+    char *output = stream_capture_finish(&capture, NULL);
+    EXPECT(output != NULL);
     return output;
 }
 
@@ -668,8 +673,55 @@ static void test_opaque_reasoning_shows_id_without_payload(void)
     free(out);
 }
 
+static void test_log_publishes_and_resets_unicode_file(void)
+{
+    char *path = path_join(t_tempdir(), "transcript-\xc3\xa9.txt");
+    t_env_set("HAX_TRANSCRIPT", path);
+    config_init();
+    EXPECT(fs_write_atomic(path, "stale contents", 14, 0) == 0);
+    transcript_log_init();
+    char *bytes = fs_read_file(path, NULL);
+    EXPECT_STR_EQ(bytes, "");
+    free(bytes);
+    struct transcript_log *log = transcript_log_open("original header", NULL, 0);
+    EXPECT(log != NULL);
+    if (!log)
+        goto out;
+    struct item item = {.kind = ITEM_USER_MESSAGE, .text = "unique submitted text"};
+    transcript_log_append(log, &item, 1);
+    transcript_log_append(log, &item, 1);
+    bytes = fs_read_file(path, NULL);
+    EXPECT(bytes != NULL);
+    if (bytes) {
+        EXPECT(contains(bytes, "original header"));
+        EXPECT(count_occurrences(bytes, "unique submitted text") == 1);
+    }
+    free(bytes);
+    transcript_log_reset(log, "replacement header", NULL, 0);
+    bytes = fs_read_file(path, NULL);
+    EXPECT(bytes != NULL);
+    if (bytes) {
+        EXPECT(contains(bytes, "replacement header"));
+        EXPECT(!contains(bytes, "original header"));
+        EXPECT(!contains(bytes, "unique submitted text"));
+    }
+    free(bytes);
+    transcript_log_append(log, &item, 1);
+    transcript_log_close(log);
+    bytes = fs_read_file(path, NULL);
+    EXPECT(bytes != NULL);
+    if (bytes)
+        EXPECT(count_occurrences(bytes, "unique submitted text") == 1);
+    free(bytes);
+out:
+    config_free();
+    t_env_unset("HAX_TRANSCRIPT");
+    free(path);
+}
+
 int main(void)
 {
+    test_log_publishes_and_resets_unicode_file();
     test_banner_degrades_to_ascii_without_utf8();
 
     /* The rules and box drawing asserted below are the UTF-8 spelling, which the renderer emits

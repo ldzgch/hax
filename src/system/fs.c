@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "system/fs.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <libgen.h>
@@ -11,11 +12,44 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-#include "buf.h"
 #include "xalloc.h"
 #include "system/fd.h"
 #include "system/path.h"
 #include "text/diff.h"
+
+int fs_list_directory(const char *path, void (*visit)(const char *name, void *ctx), void *ctx)
+{
+    DIR *dir = opendir(path);
+    if (!dir)
+        return -1;
+    struct dirent *entry;
+    errno = 0;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0)
+            visit(entry->d_name, ctx);
+        errno = 0;
+    }
+    int saved_errno = errno;
+    closedir(dir);
+    errno = saved_errno;
+    return saved_errno ? -1 : 0;
+}
+
+int fs_same_file(const char *first, const char *second)
+{
+    struct stat left, right;
+    if (stat(first, &left) < 0 || stat(second, &right) < 0)
+        return -1;
+    return left.st_dev == right.st_dev && left.st_ino == right.st_ino;
+}
+
+int fs_entry_exists(const char *path)
+{
+    struct stat info;
+    if (lstat(path, &info) == 0)
+        return 1;
+    return errno == ENOENT || errno == ENOTDIR ? 0 : -1;
+}
 
 int fs_mkdir_p(const char *path)
 {
@@ -382,43 +416,6 @@ char *fs_which(const char *name)
     }
 }
 
-char *fs_shell_head(const char *shell_cmd)
-{
-    if (!shell_cmd)
-        return NULL;
-    shell_cmd += strspn(shell_cmd, " \t");
-    size_t head_len = strcspn(shell_cmd, " \t");
-    if (head_len == 0)
-        return NULL;
-    if (strcspn(shell_cmd, "\"'`\\$;|&<>()=~*?[#") < head_len)
-        return NULL;
-
-    char *head = xmalloc(head_len + 1);
-    memcpy(head, shell_cmd, head_len);
-    head[head_len] = '\0';
-    return head;
-}
-
-int fs_shell_head_resolves(const char *shell_cmd)
-{
-    if (!shell_cmd)
-        return 0;
-    shell_cmd += strspn(shell_cmd, " \t");
-    if (*shell_cmd == '\0')
-        return 0;
-
-    char *head = fs_shell_head(shell_cmd);
-    /* Quoting, expansion, assignments, redirection, or globs in the head defeat a plain PATH
-     * lookup, so assume the shell can start such a command. */
-    if (!head)
-        return 1;
-    char *path = fs_which(head);
-    int resolves = path != NULL;
-    free(path);
-    free(head);
-    return resolves;
-}
-
 static int regular_mode_or_error(mode_t mode)
 {
     if (S_ISREG(mode))
@@ -449,63 +446,4 @@ int fs_open_regular(const char *path)
     close(fd);
     errno = saved_errno;
     return -1;
-}
-
-static ssize_t read_retry(int fd, void *data, size_t length)
-{
-    ssize_t bytes_read;
-    do {
-        bytes_read = read(fd, data, length);
-    } while (bytes_read < 0 && errno == EINTR);
-    return bytes_read;
-}
-
-char *fs_read_file(const char *path, size_t *out_len)
-{
-    return fs_read_file_capped(path, SIZE_MAX, out_len, NULL);
-}
-
-char *fs_read_file_capped(const char *path, size_t cap, size_t *out_len, int *out_truncated)
-{
-    int saved_errno;
-    int truncated = 0;
-    int fd = fs_open_regular(path);
-    if (fd < 0)
-        return NULL;
-
-    struct buf contents;
-    buf_init(&contents);
-    char chunk[8192];
-    while (contents.len < cap) {
-        size_t remaining = cap - contents.len;
-        size_t request = remaining < sizeof(chunk) ? remaining : sizeof(chunk);
-        ssize_t bytes_read = read_retry(fd, chunk, request);
-        if (bytes_read < 0)
-            goto error;
-        if (bytes_read == 0)
-            break;
-        buf_append(&contents, chunk, (size_t)bytes_read);
-    }
-
-    if (contents.len == cap) {
-        char extra;
-        ssize_t bytes_read = read_retry(fd, &extra, 1);
-        if (bytes_read < 0)
-            goto error;
-        truncated = bytes_read > 0;
-    }
-
-    close(fd);
-    if (out_len)
-        *out_len = contents.len;
-    if (out_truncated)
-        *out_truncated = truncated;
-    return buf_steal(&contents);
-
-error:
-    saved_errno = errno;
-    buf_free(&contents);
-    close(fd);
-    errno = saved_errno;
-    return NULL;
 }

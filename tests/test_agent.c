@@ -8,6 +8,8 @@
 #include "agent_core.h"
 #include "config.h"
 #include "effort.h"
+#include "env.h"
+#include "files.h"
 #include "harness.h"
 #include "model_meta.h"
 #include "provider.h"
@@ -22,7 +24,7 @@ static char *capture_stdout(void (*body)(void *), void *user)
     int saved = dup(STDOUT_FILENO);
     EXPECT(saved >= 0);
 
-    FILE *tmp = tmpfile();
+    FILE *tmp = t_tmpfile();
     EXPECT(tmp != NULL);
     int tmpfd = fileno(tmp);
     EXPECT(dup2(tmpfd, STDOUT_FILENO) >= 0);
@@ -65,13 +67,13 @@ static void fixture_init(struct fixture *f)
     size_t n_settings = 0;
     const struct config_setting *settings = config_settings(&n_settings);
     for (size_t i = 0; i < n_settings; i++)
-        unsetenv(settings[i].env_var);
+        t_env_unset(settings[i].env_var);
 
-    setenv("HAX_MODEL", "model-a", 1);
-    setenv("HAX_SYSTEM_PROMPT", "sys", 1);
-    setenv("HAX_NO_ENV", "1", 1);
-    setenv("HAX_NO_AGENTS_MD", "1", 1);
-    unsetenv("HAX_EFFORT");
+    t_env_set("HAX_MODEL", "model-a");
+    t_env_set("HAX_SYSTEM_PROMPT", "sys");
+    t_env_set("HAX_NO_ENV", "1");
+    t_env_set("HAX_NO_AGENTS_MD", "1");
+    t_env_unset("HAX_EFFORT");
 
     memset(f, 0, sizeof(*f));
     f->provider.name = "prov-x";
@@ -97,10 +99,10 @@ static void fixture_free(struct fixture *f)
     if (f->state.provider && f->state.provider != &f->provider)
         model_meta_release(f->state.provider);
     agent_session_free(&f->session);
-    unsetenv("HAX_MODEL");
-    unsetenv("HAX_SYSTEM_PROMPT");
-    unsetenv("HAX_NO_ENV");
-    unsetenv("HAX_NO_AGENTS_MD");
+    t_env_unset("HAX_MODEL");
+    t_env_unset("HAX_SYSTEM_PROMPT");
+    t_env_unset("HAX_NO_ENV");
+    t_env_unset("HAX_NO_AGENTS_MD");
 }
 
 static void do_apply(void *user)
@@ -184,7 +186,7 @@ static void test_apply_settings_quiet_prints_nothing(void)
     fixture_init(&f);
     agent_session_add_user(&f.session, "hello");
     EXPECT(f.session.n_items > 0);
-    setenv("HAX_MODEL", "model-b", 1); /* the change the silent apply resolves */
+    t_env_set("HAX_MODEL", "model-b"); /* the change the silent apply resolves */
 
     char *out = capture_stdout(do_apply_quiet, &f);
     EXPECT_STR_EQ(out, "");
@@ -194,6 +196,34 @@ static void test_apply_settings_quiet_prints_nothing(void)
     EXPECT(f.render.disp.pending_newlines == 0);
 
     free(out);
+    fixture_free(&f);
+}
+
+static void test_apply_settings_no_model_fails_intact(void)
+{
+    struct fixture f;
+    fixture_init(&f);
+    agent_session_add_user(&f.session, "hello");
+    size_t items_before = f.session.n_items;
+    char *model_before = xstrdup(f.session.model);
+
+    /* Pull the model out from under the next resolve: no env value and no
+     * provider default. reconfigure must fail without touching history or
+     * the currently-applied model, and print no confirmation. (Its "no
+     * model available" diagnostic goes to stderr and shows in the test
+     * log — expected, not a failure.) */
+    t_env_unset("HAX_MODEL");
+    f.provider.default_model = NULL;
+
+    char *out = capture_stdout(do_apply, &f);
+    EXPECT(f.result == -1);
+    EXPECT(f.session.n_items == items_before);
+    EXPECT_STR_EQ(f.session.model, model_before);
+    EXPECT(strstr(out, "switched to") == NULL);
+    EXPECT(strstr(out, "ctrl-d quit") == NULL);
+
+    free(out);
+    free(model_before);
     fixture_free(&f);
 }
 
@@ -229,6 +259,7 @@ static void test_apply_settings_switches_without_model(void)
     size_t items_before = f.session.n_items;
     /* No env value and no provider default: like startup, the switch leaves the model unset. */
     unsetenv("HAX_MODEL");
+    t_env_unset("HAX_MODEL");
     f.provider.destroy = counting_provider_destroy;
     struct provider next = {.name = "prov-y"};
     f.candidate = &next;
@@ -261,7 +292,7 @@ static void test_apply_settings_refreshes_on_model_or_provider_change(void)
     free(out);
 
     /* A real model change re-probes, with the new model. */
-    setenv("HAX_MODEL", "model-b", 1);
+    t_env_set("HAX_MODEL", "model-b");
     out = capture_stdout(do_apply, &f);
     EXPECT(refresh_calls == 1);
     EXPECT_STR_EQ(refresh_last_model, "model-b");
@@ -309,7 +340,7 @@ static void test_resync_effort_follows_late_metadata(void)
     struct fixture f;
     fixture_init(&f);
     f.provider.list_efforts = resync_list_efforts;
-    setenv("HAX_EFFORT", "max", 1);
+    t_env_set("HAX_EFFORT", "max");
 
     /* Where a run starts: a ladder, nothing narrowing it, so the configured
      * level stands. */
@@ -337,7 +368,7 @@ static void test_resync_effort_follows_late_metadata(void)
     free(prev);
     EXPECT(agent_session_resync_effort(&f.session, &f.provider, NULL) == 0);
 
-    unsetenv("HAX_EFFORT");
+    t_env_unset("HAX_EFFORT");
     fixture_free(&f);
 }
 
@@ -384,8 +415,8 @@ static void add_turn(struct agent_session *session, const char *prompt, const ch
 
 static void set_state_dir(void)
 {
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
-    unsetenv("HAX_NO_SESSION");
+    t_env_set("XDG_STATE_HOME", t_tempdir());
+    t_env_unset("HAX_NO_SESSION");
 }
 
 static size_t count_users(const struct item *items, size_t item_count)
@@ -489,10 +520,10 @@ static void test_undo_reverts_history_and_file(void)
     free(f.state.pending_recall);
     session_log_close(f.state.session_log);
     agent_session_free(&f.session);
-    unsetenv("HAX_MODEL");
-    unsetenv("HAX_SYSTEM_PROMPT");
-    unsetenv("HAX_NO_ENV");
-    unsetenv("HAX_NO_AGENTS_MD");
+    t_env_unset("HAX_MODEL");
+    t_env_unset("HAX_SYSTEM_PROMPT");
+    t_env_unset("HAX_NO_ENV");
+    t_env_unset("HAX_NO_AGENTS_MD");
 }
 
 /* The in-memory cut and the recorded cut have to land on the same user turn. /undo
@@ -551,10 +582,10 @@ static void test_undo_with_continuation_cuts_disk_and_memory_alike(void)
     free(f.state.pending_recall);
     session_log_close(f.state.session_log);
     agent_session_free(&f.session);
-    unsetenv("HAX_MODEL");
-    unsetenv("HAX_SYSTEM_PROMPT");
-    unsetenv("HAX_NO_ENV");
-    unsetenv("HAX_NO_AGENTS_MD");
+    t_env_unset("HAX_MODEL");
+    t_env_unset("HAX_SYSTEM_PROMPT");
+    t_env_unset("HAX_NO_ENV");
+    t_env_unset("HAX_NO_AGENTS_MD");
 }
 
 static void test_fork_branches_and_switches_log(void)
@@ -606,10 +637,10 @@ static void test_fork_branches_and_switches_log(void)
     free(f.state.pending_recall);
     session_log_close(f.state.session_log);
     agent_session_free(&f.session);
-    unsetenv("HAX_MODEL");
-    unsetenv("HAX_SYSTEM_PROMPT");
-    unsetenv("HAX_NO_ENV");
-    unsetenv("HAX_NO_AGENTS_MD");
+    t_env_unset("HAX_MODEL");
+    t_env_unset("HAX_SYSTEM_PROMPT");
+    t_env_unset("HAX_NO_ENV");
+    t_env_unset("HAX_NO_AGENTS_MD");
 }
 
 static void test_fork_at_tip_clones_whole(void)
@@ -645,10 +676,10 @@ static void test_fork_at_tip_clones_whole(void)
     free(orig);
     session_log_close(f.state.session_log);
     agent_session_free(&f.session);
-    unsetenv("HAX_MODEL");
-    unsetenv("HAX_SYSTEM_PROMPT");
-    unsetenv("HAX_NO_ENV");
-    unsetenv("HAX_NO_AGENTS_MD");
+    t_env_unset("HAX_MODEL");
+    t_env_unset("HAX_SYSTEM_PROMPT");
+    t_env_unset("HAX_NO_ENV");
+    t_env_unset("HAX_NO_AGENTS_MD");
 }
 
 static void test_fork_without_recording_leaves_state(void)
@@ -672,10 +703,10 @@ static void test_fork_without_recording_leaves_state(void)
 
     free(out);
     agent_session_free(&f.session);
-    unsetenv("HAX_MODEL");
-    unsetenv("HAX_SYSTEM_PROMPT");
-    unsetenv("HAX_NO_ENV");
-    unsetenv("HAX_NO_AGENTS_MD");
+    t_env_unset("HAX_MODEL");
+    t_env_unset("HAX_SYSTEM_PROMPT");
+    t_env_unset("HAX_NO_ENV");
+    t_env_unset("HAX_NO_AGENTS_MD");
 }
 
 /* A fork branches from a prefix that may predate the run's current settings
@@ -741,7 +772,7 @@ static void test_session_records_provider_id(void)
     set_state_dir();
     struct fixture f;
     fixture_init(&f); /* clears the env, so pin the id after it */
-    setenv("HAX_PROVIDER", "prov-id", 1);
+    t_env_set("HAX_PROVIDER", "prov-id");
     f.provider.name = "Display Name"; /* what a display_name override leaves behind */
     add_turn(&f.session, "first", "r1");
 
@@ -759,7 +790,7 @@ static void test_session_records_provider_id(void)
     free(path);
     session_log_close(f.state.session_log);
     fixture_free(&f);
-    unsetenv("HAX_PROVIDER");
+    t_env_unset("HAX_PROVIDER");
 }
 
 /* A mid-session switch has to reach the session file, or a later resume would
@@ -777,7 +808,7 @@ static void test_apply_settings_records_switch(void)
                        f.session.n_items); /* materializes it */
     char *path = xstrdup(session_log_path(f.state.session_log));
 
-    setenv("HAX_MODEL", "model-b", 1);
+    t_env_set("HAX_MODEL", "model-b");
     char *out = capture_stdout(do_apply, &f);
 
     /* A switch the user hasn't used yet stays out of the file. */

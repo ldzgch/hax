@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#include "format_attr.h"
+
 /* Block-aware output for separating visual blocks with exactly one blank line.
  *
  * Content writes defer trailing line endings so disp_block_separator() can collapse them to the
@@ -36,8 +38,8 @@ void disp_write(struct disp *disp, const char *bytes, size_t len);
 /* Write zero-width terminal control bytes without changing newline state. */
 void disp_write_ansi(struct disp *disp, const char *bytes);
 
-__attribute__((format(printf, 2, 3), nonnull(2))) void disp_printf(struct disp *disp,
-                                                                   const char *format, ...);
+__attribute__((format(HAX_PRINTF_FORMAT, 2, 3), nonnull(2))) void
+disp_printf(struct disp *disp, const char *format, ...);
 
 /* End the previous block with exactly one blank line, collapsing pending line endings. */
 void disp_block_separator(struct disp *disp);

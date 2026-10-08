@@ -1,11 +1,14 @@
 /* SPDX-License-Identifier: MIT */
+#include <errno.h>
 #include <jansson.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "files.h"
 #include "harness.h"
+#include "pipe.h"
 #include "tool.h"
 #include "xalloc.h"
 #include "system/fs.h"
@@ -107,6 +110,9 @@ static void test_write_overwrites(void)
 
 static void test_write_preserves_mode(void)
 {
+#ifdef _WIN32
+    T_SKIP("POSIX file mode bits are unavailable on Windows");
+#else
     char *dir = t_tempdir();
     char *path = xasprintf("%s/script.sh", dir);
 
@@ -122,10 +128,14 @@ static void test_write_preserves_mode(void)
     EXPECT((st.st_mode & 0777) == 0750);
 
     free(path);
+#endif
 }
 
 static void test_write_preserves_setuid(void)
 {
+#ifdef _WIN32
+    T_SKIP("POSIX file mode bits are unavailable on Windows");
+#else
     char *dir = t_tempdir();
     char *path = xasprintf("%s/helper", dir);
 
@@ -141,6 +151,7 @@ static void test_write_preserves_setuid(void)
     EXPECT((st.st_mode & 07777) == 04755);
 
     free(path);
+#endif
 }
 
 static void test_write_unchanged_yields_empty_diff(void)
@@ -165,22 +176,18 @@ static void test_write_unchanged_yields_empty_diff(void)
     free(path);
 }
 
-static void test_write_refuses_fifo(void)
+static void test_write_refuses_pipe(void)
 {
-    /* Reading a FIFO to generate a diff could block indefinitely. */
-    char *dir = t_tempdir();
-    char *path = xasprintf("%s/pipe", dir);
-    EXPECT(mkfifo(path, 0644) == 0);
-
-    char *out = call_write(path, "x\n");
-    EXPECT(strstr(out, "not a regular file") != NULL);
+    struct t_pipe *pipe = t_pipe_create();
+    EXPECT(pipe != NULL);
+    if (!pipe)
+        return;
+    char *out = call_write(t_pipe_path(pipe), "x\n");
+    if (!strstr(out, "not a regular file"))
+        FAIL("unexpected pipe-write result: %s", out);
     free(out);
-
-    struct stat st;
-    EXPECT(stat(path, &st) == 0);
-    EXPECT(S_ISFIFO(st.st_mode));
-
-    free(path);
+    EXPECT(t_pipe_exists(pipe));
+    t_pipe_close(pipe);
 }
 
 static void test_write_through_dangling_symlink(void)
@@ -189,15 +196,21 @@ static void test_write_through_dangling_symlink(void)
     char *real = xasprintf("%s/real.txt", dir);
     char *link = xasprintf("%s/link.txt", dir);
 
-    EXPECT(symlink(real, link) == 0); /* dangling on purpose */
+    if (t_symlink(real, link, 0) < 0) {
+        int error = errno;
+        free(real);
+        free(link);
+        if (error == EPERM)
+            T_SKIP("symlink creation requires Developer Mode or symlink privilege");
+        FAIL("cannot create symlink: %s", strerror(error));
+        return;
+    } /* dangling on purpose */
 
     char *out = call_write(link, "hello\n");
     EXPECT(strstr(out, "created ") != NULL);
     free(out);
 
-    struct stat lst;
-    EXPECT(lstat(link, &lst) == 0);
-    EXPECT(S_ISLNK(lst.st_mode));
+    EXPECT(t_file_is_symlink(link));
 
     char *got = read_file(real);
     EXPECT_STR_EQ(got, "hello\n");
@@ -246,15 +259,21 @@ static void test_write_through_symlink(void)
 
     char *out = call_write(real, "first\n");
     free(out);
-    EXPECT(symlink(real, link) == 0);
+    if (t_symlink(real, link, 0) < 0) {
+        int error = errno;
+        free(real);
+        free(link);
+        if (error == EPERM)
+            T_SKIP("symlink creation requires Developer Mode or symlink privilege");
+        FAIL("cannot create symlink: %s", strerror(error));
+        return;
+    }
 
     out = call_write(link, "second\n");
     EXPECT(strstr(out, "+second") != NULL);
     free(out);
 
-    struct stat lst;
-    EXPECT(lstat(link, &lst) == 0);
-    EXPECT(S_ISLNK(lst.st_mode));
+    EXPECT(t_file_is_symlink(link));
 
     char *got = read_file(real);
     EXPECT_STR_EQ(got, "second\n");
@@ -279,6 +298,6 @@ int main(void)
     test_write_blank_content_summary();
     test_write_through_symlink();
     test_write_through_dangling_symlink();
-    test_write_refuses_fifo();
+    test_write_refuses_pipe();
     T_REPORT();
 }

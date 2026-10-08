@@ -3,7 +3,6 @@
 #include <jansson.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include "buf.h"
 #include "provider.h"
@@ -109,18 +108,14 @@ static char *run(const char *args_json, struct tool_run_ctx *ctx)
 
     path = path_expand_home(raw_path);
 
-    /* Avoid blocking on FIFOs and replacing special files with regular files. */
-    struct stat st;
-    if (stat(path, &st) == 0 && !S_ISREG(st.st_mode)) {
-        result = xasprintf("%s exists but is not a regular file", path);
-        goto out;
-    }
-
     size_t original_len = 0;
     int truncated = 0;
     original = fs_read_file_capped(path, EDIT_READ_CAP, &original_len, &truncated);
     if (!original) {
-        result = xasprintf("error reading %s: %s", path, strerror(errno));
+        if (errno == EINVAL || errno == EISDIR)
+            result = xasprintf("%s exists but is not a regular file", path);
+        else
+            result = xasprintf("error reading %s: %s", path, strerror(errno));
         goto out;
     }
     if (truncated) {

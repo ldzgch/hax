@@ -15,6 +15,9 @@
 #include "xalloc.h"
 #include "system/fs.h"
 #include "system/path.h"
+#ifdef _WIN32
+#include "system/win_utf8.h"
+#endif
 #include "text/fmt.h"
 #include "text/utf8_sanitize.h"
 
@@ -295,6 +298,9 @@ struct config_store {
 };
 
 static struct config_store store;
+#ifdef _WIN32
+static char *environment_strings[sizeof(REGISTRY) / sizeof(REGISTRY[0])];
+#endif
 
 #define CONFIG_MAX_BYTES (1024 * 1024)
 
@@ -415,6 +421,12 @@ static void free_reported_presets(void);
 void config_free(void)
 {
     store.file_unusable = 0;
+#ifdef _WIN32
+    for (size_t i = 0; i < sizeof(environment_strings) / sizeof(environment_strings[0]); i++) {
+        free(environment_strings[i]);
+        environment_strings[i] = NULL;
+    }
+#endif
     scalar_cache_clear();
     json_decref(store.file);
     store.file = NULL;
@@ -546,6 +558,26 @@ static const char *apply_default_sentinel(const char *value, const struct config
     return value;
 }
 
+static const char *setting_environment(const struct config_setting *setting)
+{
+    if (!setting)
+        return NULL;
+#ifdef _WIN32
+    size_t index = (size_t)(setting - REGISTRY);
+    char *value = win_utf8_getenv_value(setting->env_var);
+    char *previous = environment_strings[index];
+    if (value && previous && strcmp(value, previous) == 0) {
+        free(value);
+        return previous;
+    }
+    free(previous);
+    environment_strings[index] = value;
+    return value;
+#else
+    return getenv(setting->env_var);
+#endif
+}
+
 /* A sentinel reports the tier that contains it even though its resolved value may be NULL. */
 static const char *resolve_with_source(const char *key, int skip_empty, int skip_run,
                                        const char **source)
@@ -558,7 +590,7 @@ static const char *resolve_with_source(const char *key, int skip_empty, int skip
         value_source = "run";
     } else {
         const char *conversation_value = object_get_string(store.conversation, key);
-        const char *environment_value = setting ? getenv(setting->env_var) : NULL;
+        const char *environment_value = setting_environment(setting);
         const char *state_value = object_get_string(store.state, key);
         const char *file_value = object_get_string(store.file, key);
 
@@ -820,7 +852,7 @@ char *config_prompt_expand(const char *value, char **error)
     char *path;
     if (spec[0] == '~')
         path = path_expand_home(spec);
-    else if (spec[0] == '/')
+    else if (path_is_absolute(spec))
         path = xstrdup(spec);
     else
         path = xdg_hax_config_path(spec);

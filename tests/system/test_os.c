@@ -7,22 +7,17 @@
 
 #include "harness.h"
 #include "xalloc.h"
+#include "system/fs.h"
 #include "system/os.h"
 
 static char *write_release(const char *content)
 {
-    char *path = xstrdup("/tmp/hax-os-release-test-XXXXXX");
-    int fd = mkstemp(path);
-    if (fd < 0) {
-        FAIL("mkstemp: %s", strerror(errno));
+    char *path = xasprintf("%s/os-release", t_tempdir());
+    if (fs_write_atomic(path, content, strlen(content), 0) < 0) {
+        FAIL("write release: %s", strerror(errno));
         free(path);
         return NULL;
     }
-    size_t len = strlen(content);
-    ssize_t n = write(fd, content, len);
-    if (n < 0 || (size_t)n != len)
-        FAIL("write: %s", n < 0 ? strerror(errno) : "short write");
-    close(fd);
     return path;
 }
 

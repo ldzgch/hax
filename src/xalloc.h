@@ -5,6 +5,8 @@
 #include <stdarg.h>
 #include <stddef.h>
 
+#include "format_attr.h"
+
 /* Allocation failures are fatal. Zero-sized allocation requests return non-NULL. */
 void *xmalloc(size_t size);
 void *xcalloc(size_t count, size_t element_size);
@@ -12,10 +14,11 @@ void *xrealloc(void *ptr, size_t size);
 /* Return an allocated duplicate, or NULL for NULL input. */
 char *xstrdup(const char *str);
 /* Return an allocated formatted string, or NULL if formatting fails. */
-char *xasprintf(const char *format, ...) __attribute__((format(printf, 1, 2), nonnull(1)));
+char *xasprintf(const char *format, ...)
+    __attribute__((format(HAX_PRINTF_FORMAT, 1, 2), nonnull(1)));
 /* As xasprintf(), without consuming or ending args. */
 char *xvasprintf(const char *format, va_list args)
-    __attribute__((format(printf, 1, 0), nonnull(1)));
+    __attribute__((format(HAX_PRINTF_FORMAT, 1, 0), nonnull(1)));
 /* Print the OOM diagnostic and abort. The allocation wrappers and growable buffers share it. */
 void die_oom(void);
 

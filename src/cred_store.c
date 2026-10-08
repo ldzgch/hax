@@ -2,14 +2,13 @@
 #include "cred_store.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <jansson.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/file.h>
 
 #include "xalloc.h"
+#include "system/file_lock.h"
 #include "system/fs.h"
 #include "system/path.h"
 
@@ -26,12 +25,8 @@ char *cred_store_file_path(void)
 
 static int ensure_parent_dir(const char *path)
 {
-    const char *slash = strrchr(path, '/');
-    if (!slash)
-        return 0;
     char *parent = xstrdup(path);
-    parent[slash - path] = '\0';
-    int result = fs_mkdir_p(parent);
+    int result = path_climb_to_parent(parent) ? fs_mkdir_p(parent) : 0;
     free(parent);
     return result;
 }
@@ -45,15 +40,15 @@ static int store_lock(const char *path)
     if (ensure_parent_dir(path) != 0)
         return -1;
     char *lock_path = xasprintf("%s.lock", path);
-    int fd = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    int fd = fs_open_private(lock_path, 0);
     free(lock_path);
     if (fd < 0)
         return -1;
-    while (flock(fd, LOCK_EX) != 0) {
-        if (errno != EINTR) {
-            close(fd);
-            return -1;
-        }
+    if (file_lock_fd(fd, 1, 0) < 0) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return -1;
     }
     return fd;
 }

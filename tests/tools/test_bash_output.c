@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "env.h"
 #include "harness.h"
 #include "system/tempfiles.h"
 #include "tools/bash_output.h"
@@ -23,11 +24,27 @@ static void test_oversized_memory_cap_spills_before_drain_limit(void)
     bash_output_destroy(output);
 }
 
+static void test_exit_status_suffix(void)
+{
+#ifdef _WIN32
+    int status = 42;
+#else
+    int status = 42 << 8;
+#endif
+    char *suffix = bash_output_format_suffix(0, 0, 0, BASH_STOP_NONE, 0, status);
+    EXPECT_STR_EQ(suffix, "\n[exit 42]");
+    free(suffix);
+    suffix = bash_output_format_suffix(0, 0, 0, BASH_STOP_NONE, 0, 0);
+    EXPECT_STR_EQ(suffix, "(no output)");
+    free(suffix);
+}
+
 int main(void)
 {
     /* Pin the cap so inherited configuration cannot invalidate truncation fixtures. */
-    setenv("HAX_TOOL_OUTPUT_CAP", "50k", 1);
+    t_env_set("HAX_TOOL_OUTPUT_CAP", "50k");
     test_oversized_memory_cap_spills_before_drain_limit();
+    test_exit_status_suffix();
     tempfiles_cleanup();
     T_REPORT();
 }

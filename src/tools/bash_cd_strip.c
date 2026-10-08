@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "xalloc.h"
+#include "system/path.h"
 
 enum quote_mode {
     QUOTE_NONE,
@@ -20,6 +21,10 @@ static int is_path_safe(char c)
         return 1;
     if ((u >= 'A' && u <= 'Z') || (u >= 'a' && u <= 'z') || (u >= '0' && u <= '9'))
         return 1;
+#ifdef _WIN32
+    if (c == ':')
+        return 1;
+#endif
     return c == '/' || c == '.' || c == '_' || c == '-' || c == '+';
 }
 
@@ -42,12 +47,39 @@ static int unquoted_expansion_safe(const char *value)
     return 1;
 }
 
+#ifdef _WIN32
+/* Git Bash accepts native drive paths and exposes drive roots as /c, /d, etc. Preserve component
+ * case because Windows directories can opt into case-sensitive lookup. */
+static char *bash_native_path(const char *path)
+{
+    char *normalized = xstrdup(path);
+    for (char *cursor = normalized; *cursor; cursor++) {
+        if (*cursor == '\\')
+            *cursor = '/';
+    }
+    size_t length = strlen(normalized);
+    if (length >= 2 && normalized[0] == '/' &&
+        ((normalized[1] >= 'A' && normalized[1] <= 'Z') ||
+         (normalized[1] >= 'a' && normalized[1] <= 'z')) &&
+        (length == 2 || normalized[2] == '/')) {
+        char *native = xasprintf("%c:/%s", normalized[1], length > 2 ? normalized + 3 : "");
+        free(normalized);
+        normalized = native;
+    }
+    if (normalized[0] && normalized[1] == ':' && normalized[0] >= 'A' && normalized[0] <= 'Z')
+        normalized[0] += 'a' - 'A';
+    return normalized;
+}
+#endif
+
 /* Ignore trailing slashes without reducing the root path to an empty string. */
 static int paths_equal(const char *a, size_t a_len, const char *b, size_t b_len)
 {
-    while (a_len > 1 && a[a_len - 1] == '/')
+    size_t a_root = path_root_length(a);
+    size_t b_root = path_root_length(b);
+    while (a_len > (a_root ? a_root : 1) && a[a_len - 1] == '/')
         a_len--;
-    while (b_len > 1 && b[b_len - 1] == '/')
+    while (b_len > (b_root ? b_root : 1) && b[b_len - 1] == '/')
         b_len--;
     return a_len == b_len && memcmp(a, b, a_len) == 0;
 }
@@ -108,8 +140,6 @@ static char *resolve_cd_target(const char *token, size_t token_len, enum quote_m
     }
 
     /* Resolving relative paths would require filesystem state, so accept only absolute literals. */
-    if (token_len < 1 || token[0] != '/')
-        return NULL;
     for (size_t i = 0; i < token_len; i++) {
         if (!is_token_safe(token[i], quote))
             return NULL;
@@ -117,6 +147,10 @@ static char *resolve_cd_target(const char *token, size_t token_len, enum quote_m
     char *path = xmalloc(token_len + 1);
     memcpy(path, token, token_len);
     path[token_len] = '\0';
+    if (!path_is_absolute(path)) {
+        free(path);
+        return NULL;
+    }
     return path;
 }
 
@@ -194,7 +228,16 @@ size_t bash_strip_cd_prefix(const char *command, const char *cwd, const char *ho
     char *resolved_path = resolve_cd_target(token, token_len, quote, cwd, home);
     if (!resolved_path)
         return 0;
+#ifdef _WIN32
+    char *native_target = bash_native_path(resolved_path);
+    char *native_cwd = bash_native_path(cwd);
+    int matches_cwd =
+        paths_equal(native_target, strlen(native_target), native_cwd, strlen(native_cwd));
+    free(native_cwd);
+    free(native_target);
+#else
     int matches_cwd = paths_equal(resolved_path, strlen(resolved_path), cwd, strlen(cwd));
+#endif
     free(resolved_path);
     return matches_cwd ? (size_t)(cursor - command) : 0;
 }

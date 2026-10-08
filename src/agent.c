@@ -35,6 +35,7 @@
 #include "system/fs.h"
 #include "system/locale.h"
 #include "system/spawn.h"
+#include "system/stream_capture.h"
 #include "system/tempfiles.h"
 #include "terminal/ansi.h"
 #include "terminal/input.h"
@@ -390,11 +391,10 @@ static void show_history_cb(void *user)
     const struct agent_state *state = user;
     const struct agent_session *session = state->session;
     struct render_ctx render = {.show_reasoning = reasoning_visible()};
-    char *output = NULL;
-    size_t output_len = 0;
-    FILE *memory_stream = open_memstream(&output, &output_len);
-    if (!memory_stream)
+    struct stream_capture capture;
+    if (stream_capture_open(&capture) < 0)
         return;
+    FILE *memory_stream = capture.stream;
     render.disp.sink = memory_stream;
     if (markdown_enabled())
         render.md = md_new(md_emit_to_disp, &render.disp, md_cols());
@@ -427,7 +427,10 @@ static void show_history_cb(void *user)
     render_set_mode(&render, RENDER_IDLE);
     disp_commit_newlines(&render.disp);
     md_free(render.md);
-    fclose(memory_stream);
+    size_t output_len;
+    char *output = stream_capture_finish(&capture, &output_len);
+    if (!output)
+        return;
 
     struct spawn_pipe pager;
     if (view_pager_open(&pager) == 0) {

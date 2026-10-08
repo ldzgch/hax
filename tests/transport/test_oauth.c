@@ -1,22 +1,15 @@
 /* SPDX-License-Identifier: MIT */
 #include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-/* struct timeval is not exposed by socket headers on every libc. */
-#include <sys/time.h> // IWYU pragma: keep
 
 #include "buf.h"
 #include "harness.h"
 #include "xalloc.h"
 #include "system/clock.h"
-#include "system/fd.h"
+#include "system/socket.h"
 #include "text/base64.h"
 #include "text/sha256.h"
 #include "transport/oauth.h"
@@ -108,59 +101,53 @@ static void test_pkce(void)
 
 /* ---------- listener ---------- */
 
-static int connect_loopback(int port)
+static intptr_t connect_loopback(int port)
 {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    EXPECT(fd >= 0);
-    if (fd < 0)
-        return -1;
-    struct timeval timeout = {.tv_sec = 5};
-    EXPECT(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0);
-    EXPECT(setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0);
-    int flags = fcntl(fd, F_GETFL, 0);
-    EXPECT(flags >= 0);
-    EXPECT(fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0);
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((uint16_t)port);
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    int result = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
-    if (result < 0 && errno == EINPROGRESS) {
-        struct pollfd pfd = {.fd = fd, .events = POLLOUT};
-        int error = 0;
-        socklen_t length = sizeof(error);
-        result = poll(&pfd, 1, 5000) > 0 &&
-                         getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) == 0 && error == 0
-                     ? 0
-                     : -1;
-    }
-    EXPECT(result == 0);
-    if (result != 0) {
-        close(fd);
-        return -1;
-    }
-    EXPECT(fcntl(fd, F_SETFL, flags) == 0);
+    intptr_t fd = socket_loopback_connect(SOCKET_IPV4, port, 5000);
+    EXPECT(fd != -1);
+    if (fd != -1)
+        EXPECT(socket_set_send_timeout(fd, 5000) == 0);
     return fd;
 }
 
-static int queue_request(int port, const char *target)
+static int send_bytes(intptr_t fd, const char *bytes, size_t length)
 {
-    int fd = connect_loopback(port);
+    while (length) {
+        ptrdiff_t count = socket_send(fd, bytes, length);
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count <= 0)
+            return -1;
+        bytes += count;
+        length -= (size_t)count;
+    }
+    return 0;
+}
+
+static intptr_t queue_request(int port, const char *target)
+{
+    intptr_t fd = connect_loopback(port);
     char *request = xasprintf("GET %s HTTP/1.1\r\nHost: localhost\r\n\r\n", target);
-    EXPECT(fd_write_all(fd, request, strlen(request)) == 0);
+    EXPECT(send_bytes(fd, request, strlen(request)) == 0);
     free(request);
     return fd;
 }
 
-static char *read_response(int fd)
+static char *read_response(intptr_t fd)
 {
     struct buf response;
     buf_init(&response);
     char chunk[512];
-    ssize_t count;
-    while ((count = read(fd, chunk, sizeof(chunk))) > 0)
+    ptrdiff_t count = -1;
+    for (;;) {
+        uint32_t ready;
+        if (socket_wait_readable(&fd, 1, 5000, &ready) <= 0)
+            break;
+        count = socket_recv(fd, chunk, sizeof(chunk));
+        if (count <= 0)
+            break;
         buf_append(&response, chunk, (size_t)count);
+    }
     EXPECT(count == 0);
     char *text = buf_steal(&response);
     return text ? text : xstrdup("");
@@ -176,7 +163,7 @@ static void test_listener_captures_code(void)
     if (!listener)
         return;
 
-    int fd = queue_request(port, "/auth/callback?code=abc%20def&state=S1");
+    intptr_t fd = queue_request(port, "/auth/callback?code=abc%20def&state=S1");
     char *code = NULL;
     char *detail = NULL;
     EXPECT(oauth_listener_wait(listener, "/auth/callback", "S1", monotonic_ms() + 5000, NULL, NULL,
@@ -189,7 +176,7 @@ static void test_listener_captures_code(void)
     EXPECT(strstr(response, "Connection: close") != NULL);
     EXPECT(strstr(response, "Login complete") != NULL);
     free(response);
-    close(fd);
+    socket_close(fd);
     free(code);
     oauth_listener_close(listener);
 }
@@ -229,30 +216,30 @@ static void test_listener_survives_stray_requests(void)
     }
 
     /* Accept order is not guaranteed: finish each stray request before sending the redirect. */
-    int fd = queue_request(port, "/favicon.ico");
+    intptr_t fd = queue_request(port, "/favicon.ico");
     char *response = read_response(fd);
     EXPECT(strstr(response, "404 Not Found") != NULL);
     free(response);
-    close(fd);
+    socket_close(fd);
 
     fd = queue_request(port, "/cb?code=evil&state=WRONG");
     response = read_response(fd);
     EXPECT(strstr(response, "400 Bad Request") != NULL);
     EXPECT(strstr(response, "Login mismatch") != NULL);
     free(response);
-    close(fd);
+    socket_close(fd);
 
     fd = queue_request(port, "/cb");
     response = read_response(fd);
     EXPECT(strstr(response, "400 Bad Request") != NULL);
     free(response);
-    close(fd);
+    socket_close(fd);
 
     fd = queue_request(port, "/cb?state=S2&code=ok");
     response = read_response(fd);
     EXPECT(strstr(response, "Login complete") != NULL);
     free(response);
-    close(fd);
+    socket_close(fd);
     EXPECT(pthread_join(thread, NULL) == 0);
     EXPECT(wait.result == OAUTH_REDIRECT_CODE);
     EXPECT_STR_EQ(wait.code, "ok");
@@ -271,7 +258,8 @@ static void test_listener_reports_denial(void)
     if (!listener)
         return;
 
-    int fd = queue_request(port, "/cb?state=S3&error=access_denied&error_description=Nope+really");
+    intptr_t fd =
+        queue_request(port, "/cb?state=S3&error=access_denied&error_description=Nope+really");
     char *code = NULL;
     char *detail = NULL;
     EXPECT(oauth_listener_wait(listener, "/cb", "S3", monotonic_ms() + 5000, NULL, NULL, &code,
@@ -283,7 +271,7 @@ static void test_listener_reports_denial(void)
     char *response = read_response(fd);
     EXPECT(strstr(response, "Login failed") != NULL);
     free(response);
-    close(fd);
+    socket_close(fd);
     oauth_listener_close(listener);
 }
 
@@ -307,23 +295,23 @@ static void test_listener_accepts_state_suffix(void)
         return;
     }
 
-    int fd = queue_request(port, "/cb?code=evil&state=S");
+    intptr_t fd = queue_request(port, "/cb?code=evil&state=S");
     char *response = read_response(fd);
     EXPECT(strstr(response, "Login mismatch") != NULL);
     free(response);
-    close(fd);
+    socket_close(fd);
 
     fd = queue_request(port, "/cb?code=evil&state=S4x");
     response = read_response(fd);
     EXPECT(strstr(response, "Login mismatch") != NULL);
     free(response);
-    close(fd);
+    socket_close(fd);
 
     fd = queue_request(port, "/cb?code=ok&state=S4.onboarding_entrypoint=life_sciences");
     response = read_response(fd);
     EXPECT(strstr(response, "Login complete") != NULL);
     free(response);
-    close(fd);
+    socket_close(fd);
     EXPECT(pthread_join(thread, NULL) == 0);
     EXPECT(wait.result == OAUTH_REDIRECT_CODE);
     EXPECT_STR_EQ(wait.code, "ok");
@@ -357,8 +345,8 @@ static void test_listener_survives_stalled_sender(void)
     if (!listener)
         return;
 
-    int stalled = connect_loopback(port);
-    EXPECT(fd_write_all(stalled, "GET /cb?code", 12) == 0);
+    intptr_t stalled = connect_loopback(port);
+    EXPECT(send_bytes(stalled, "GET /cb?code", 12) == 0);
 
     char *code = NULL;
     char *detail = NULL;
@@ -366,22 +354,22 @@ static void test_listener_survives_stalled_sender(void)
                                &detail) == OAUTH_REDIRECT_TIMEOUT);
 
     /* The tick keeps being polled while the request is being read. */
-    int stalled_again = connect_loopback(port);
-    EXPECT(fd_write_all(stalled_again, "GET /cb?code", 12) == 0);
+    intptr_t stalled_again = connect_loopback(port);
+    EXPECT(send_bytes(stalled_again, "GET /cb?code", 12) == 0);
     int tick_calls = 0;
     EXPECT(oauth_listener_wait(listener, "/cb", "S6", monotonic_ms() + 30000,
                                count_then_cancel_tick, &tick_calls, &code,
                                &detail) == OAUTH_REDIRECT_CANCELLED);
 
     /* Once the stalled sender exhausts its request budget it is dropped, not served. */
-    int genuine = queue_request(port, "/cb?state=S6&code=ok");
+    intptr_t genuine = queue_request(port, "/cb?state=S6&code=ok");
     EXPECT(oauth_listener_wait(listener, "/cb", "S6", monotonic_ms() + 30000, NULL, NULL, &code,
                                &detail) == OAUTH_REDIRECT_CODE);
     EXPECT_STR_EQ(code, "ok");
     free(code);
-    close(stalled);
-    close(stalled_again);
-    close(genuine);
+    socket_close(stalled);
+    socket_close(stalled_again);
+    socket_close(genuine);
     oauth_listener_close(listener);
 }
 
@@ -408,20 +396,11 @@ static void test_listener_timeout_and_cancel(void)
  * v4-only coverage still beats failing. */
 static void test_listener_avoids_v6_conflict(void)
 {
-    int squatter = socket(AF_INET6, SOCK_STREAM, 0);
-    if (squatter < 0)
-        T_SKIP("no IPv6 support");
-    struct sockaddr_in6 addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin6_family = AF_INET6;
-    addr.sin6_addr = in6addr_loopback;
-    if (bind(squatter, (struct sockaddr *)&addr, sizeof(addr)) != 0 || listen(squatter, 1) != 0) {
-        close(squatter);
+    intptr_t squatter = socket_loopback_listen(SOCKET_IPV6, 0);
+    if (squatter == -1)
         T_SKIP("cannot listen on ::1");
-    }
-    socklen_t addr_len = sizeof(addr);
-    EXPECT(getsockname(squatter, (struct sockaddr *)&addr, &addr_len) == 0);
-    int taken_port = ntohs(addr.sin6_port);
+    int taken_port = socket_bound_port(squatter);
+    EXPECT(taken_port > 0);
 
     int port = 0;
     const int ports[] = {taken_port, 0};
@@ -436,7 +415,7 @@ static void test_listener_avoids_v6_conflict(void)
     EXPECT(listener != NULL);
     EXPECT(port == taken_port);
     oauth_listener_close(listener);
-    close(squatter);
+    socket_close(squatter);
 }
 
 static void test_listener_skips_taken_port(void)
@@ -465,6 +444,7 @@ static void test_listener_skips_taken_port(void)
 
 int main(void)
 {
+    EXPECT(socket_init() == 0);
     test_split_request_line();
     test_query_param();
     test_pkce();
@@ -476,5 +456,6 @@ int main(void)
     test_listener_timeout_and_cancel();
     test_listener_avoids_v6_conflict();
     test_listener_skips_taken_port();
+    socket_cleanup();
     T_REPORT();
 }

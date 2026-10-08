@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT */
+#include <jansson.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,18 +17,21 @@
 #include "render/disp.h"
 #include "render/render_ctx.h"
 #include "system/locale.h"
+#include "system/path.h"
+#include "system/stream_capture.h"
 #include "terminal/vt_resolve.h"
+#include "text/shell_quote.h"
 #include "text/width.h"
 
 /* Render through the paged-history sink and resolver. Markdown stays disabled so assertions do
  * not depend on wrapping. Caller frees. */
 static char *render(enum history_detail detail, const struct item *items, size_t n, int reasoning)
 {
-    char *raw = NULL;
-    size_t raw_len = 0;
-    FILE *mem = open_memstream(&raw, &raw_len);
-    if (!mem) {
-        perror("open_memstream");
+    struct stream_capture mem_capture;
+    int mem_opened = stream_capture_open(&mem_capture);
+    FILE *mem = mem_capture.stream;
+    if (mem_opened < 0) {
+        perror("stream_capture_open");
         exit(1);
     }
     struct render_ctx render = {.disp = {.sink = mem, .committed_newlines = 2},
@@ -35,17 +39,21 @@ static char *render(enum history_detail detail, const struct item *items, size_t
     history_render(&render, detail, items, n, 0);
     render_set_mode(&render, RENDER_IDLE);
     disp_commit_newlines(&render.disp);
-    fclose(mem);
+    size_t raw_len = 0;
+    char *raw = stream_capture_finish(&mem_capture, &raw_len);
+    EXPECT(raw != NULL);
 
-    char *out = NULL;
-    size_t out_len = 0;
-    FILE *settled = open_memstream(&out, &out_len);
-    if (!settled) {
-        perror("open_memstream");
+    struct stream_capture settled_capture;
+    int settled_opened = stream_capture_open(&settled_capture);
+    FILE *settled = settled_capture.stream;
+    if (settled_opened < 0) {
+        perror("stream_capture_open");
         exit(1);
     }
     vt_resolve(raw, raw_len, settled);
-    fclose(settled);
+    size_t out_len = 0;
+    char *out = stream_capture_finish(&settled_capture, &out_len);
+    EXPECT(out != NULL);
     free(raw);
     return out;
 }
@@ -439,12 +447,18 @@ static void test_collapsed_row_stays_in_budget_at_narrow_width(void)
  * prefix — which the hidden output asserts. */
 static void test_replays_preprocessed_args(void)
 {
-    char cwd[PATH_MAX];
-    if (!getcwd(cwd, sizeof(cwd))) {
-        T_SKIP("getcwd failed");
+    char *cwd = path_cwd();
+    EXPECT(cwd != NULL);
+    if (!cwd)
         return;
-    }
-    char *args = xasprintf("{\"command\":\"cd %s && ls src\"}", cwd);
+    char *quoted = shell_single_quote(cwd);
+    char *command = xasprintf("cd %s && ls src", quoted);
+    json_t *arguments = json_pack("{s:s}", "command", command);
+    char *args = json_dumps(arguments, JSON_COMPACT);
+    json_decref(arguments);
+    free(command);
+    free(quoted);
+    free(cwd);
     struct item items[2] = {0};
     items[0].kind = ITEM_TOOL_CALL;
     items[0].call_id = (char *)"b";
@@ -741,28 +755,32 @@ static void test_diff_result_and_no_op_marker(void)
 static char *render_from(enum history_detail detail, const struct item *items, size_t n,
                          size_t start)
 {
-    char *raw = NULL;
-    size_t raw_len = 0;
-    FILE *mem = open_memstream(&raw, &raw_len);
-    if (!mem) {
-        perror("open_memstream");
+    struct stream_capture mem_capture;
+    int mem_opened = stream_capture_open(&mem_capture);
+    FILE *mem = mem_capture.stream;
+    if (mem_opened < 0) {
+        perror("stream_capture_open");
         exit(1);
     }
     struct render_ctx render = {.disp = {.sink = mem, .committed_newlines = 2}};
     history_render(&render, detail, items, n, start);
     render_set_mode(&render, RENDER_IDLE);
     disp_commit_newlines(&render.disp);
-    fclose(mem);
+    size_t raw_len = 0;
+    char *raw = stream_capture_finish(&mem_capture, &raw_len);
+    EXPECT(raw != NULL);
 
-    char *out = NULL;
-    size_t out_len = 0;
-    FILE *settled = open_memstream(&out, &out_len);
-    if (!settled) {
-        perror("open_memstream");
+    struct stream_capture settled_capture;
+    int settled_opened = stream_capture_open(&settled_capture);
+    FILE *settled = settled_capture.stream;
+    if (settled_opened < 0) {
+        perror("stream_capture_open");
         exit(1);
     }
     vt_resolve(raw, raw_len, settled);
-    fclose(settled);
+    size_t out_len = 0;
+    char *out = stream_capture_finish(&settled_capture, &out_len);
+    EXPECT(out != NULL);
     free(raw);
     return out;
 }

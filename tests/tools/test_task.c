@@ -9,6 +9,7 @@
 
 #include "agent_core.h"
 #include "buf.h"
+#include "env.h"
 #include "harness.h"
 #include "provider.h"
 #include "tool.h"
@@ -55,8 +56,8 @@ static void test_background_fast_failure_returns_sync(void)
 
 static void test_background_detaches_and_wait_collects(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
-    setenv("HAX_BASH_TRANSITION_MIN_BYTES", "6", 1); /* "start\n" */
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
+    t_env_set("HAX_BASH_TRANSITION_MIN_BYTES", "6"); /* "start\n" */
     char *gate = gate_create();
     /* The empty name means unnamed: the detached task still gets an automatic id. */
     char *args = xasprintf("{\"command\":\"echo start; read -r _ <%s; echo done\","
@@ -92,14 +93,14 @@ static void test_background_detaches_and_wait_collects(void)
     EXPECT(strstr(out, "; no new output]") != NULL);
     free(out);
     free(id);
-    unsetenv("HAX_BASH_TRANSITION_MIN_BYTES");
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_TRANSITION_MIN_BYTES");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_timeout_detaches_instead_of_killing(void)
 {
-    setenv("HAX_BASH_TIMEOUT", TEST_YIELD, 1);
-    setenv("HAX_BASH_TRANSITION_MIN_BYTES", "6", 1); /* "early\n" */
+    t_env_set("HAX_BASH_TIMEOUT", TEST_YIELD);
+    t_env_set("HAX_BASH_TRANSITION_MIN_BYTES", "6"); /* "early\n" */
     char *gate = gate_create();
     char *args = xasprintf("{\"command\":\"echo early; read -r _ <%s; echo late\"}", gate);
     char *out = TOOL_BASH.run(args, NULL);
@@ -119,17 +120,14 @@ static void test_timeout_detaches_instead_of_killing(void)
     free(out);
     free(id);
     free(gate);
-    unsetenv("HAX_BASH_TRANSITION_MIN_BYTES");
-    unsetenv("HAX_BASH_TIMEOUT");
+    t_env_unset("HAX_BASH_TRANSITION_MIN_BYTES");
+    t_env_unset("HAX_BASH_TIMEOUT");
 }
 
 static void test_kill_stops_process_tree(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
-    char path[] = "/tmp/hax-test-task-pid-XXXXXX";
-    int fd = mkstemp(path);
-    EXPECT(fd >= 0);
-    close(fd);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
+    char *path = xasprintf("%s/pid", t_tempdir());
 
     /* The shell's own stderr is discarded so that only the task's output counts towards the footer
      * below: OpenBSD's ksh announces "Terminated" when a foreground job dies of a signal, where
@@ -145,28 +143,24 @@ static void test_kill_stops_process_tree(void)
 
     /* The kill must not beat the shell to its pid write. */
     int pid = await_pid_file(path);
-    unlink(path);
+    free(path);
     EXPECT(pid > 0);
 
     out = kill_id(id);
     /* One status footer; a task that never wrote anything reads "no output". */
-    EXPECT(strstr(out, "killed (signal ") != NULL);
+    expect_task_stopped(out);
     EXPECT(strstr(out, "; no output]") != NULL);
     free(out);
     free(id);
 
-    /* ESRCH on Linux or EPERM on Darwin means the process is gone. */
-    int alive = pid > 0 && kill(pid, 0) == 0;
-    if (alive)
-        kill(pid, SIGKILL);
-    EXPECT(!alive);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    EXPECT(process_is_gone(pid));
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_background_orphans_killed_at_yield(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
-    setenv("HAX_BASH_TRANSITION_MIN_BYTES", "2", 1); /* the pid line */
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
+    t_env_set("HAX_BASH_TRANSITION_MIN_BYTES", "2"); /* the pid line */
     /* The shell exits at once while the orphan inherits the pipe and holds it open, so the yield
      * deadline fires with nothing adoptable. */
     char *out = call_bash_background("sleep 30 & echo $!");
@@ -177,8 +171,8 @@ static void test_background_orphans_killed_at_yield(void)
     EXPECT(pid > 0);
     EXPECT(process_is_gone(pid));
     free(out);
-    unsetenv("HAX_BASH_TRANSITION_MIN_BYTES");
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_TRANSITION_MIN_BYTES");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_background_orphans_killed_at_eof(void)
@@ -196,7 +190,7 @@ static void test_background_orphans_killed_at_eof(void)
 
 static void test_adopted_orphans_killed_at_shell_exit(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *gate = gate_create();
     /* The shell outlives the yield (adopted), then exits leaving the orphan holding the pipe; the
      * registry must kill it at the shell-exit boundary, like the launch path. */
@@ -218,14 +212,14 @@ static void test_adopted_orphans_killed_at_shell_exit(void)
     EXPECT(process_is_gone(pid));
     free(out);
     free(id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_task_fds_not_inherited_by_later_commands(void)
 {
     if (access("/proc/self/fd", R_OK) != 0)
         T_SKIP("requires /proc");
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *gate = gate_create();
     char *cmd = xasprintf("read -r _ <%s", gate);
     char *out = call_bash_background(cmd);
@@ -243,12 +237,12 @@ static void test_task_fds_not_inherited_by_later_commands(void)
     free(gate);
     free(wait_for_id(id, 5));
     free(id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_exit_note_covers_uncollected_tasks(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *out = call_bash_background("sleep 30");
     char *slow_id = extract_task_id(out);
     EXPECT(slow_id != NULL);
@@ -307,13 +301,13 @@ static void test_exit_note_covers_uncollected_tasks(void)
     EXPECT(task_exit_note() == NULL);
     free(slow_id);
     free(quick_id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_kill_escalates_past_term_exiting_shell(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
-    setenv("HAX_BASH_TRANSITION_MIN_BYTES", "2", 1); /* the pid line */
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
+    t_env_set("HAX_BASH_TRANSITION_MIN_BYTES", "2"); /* the pid line */
     /* SIGTERM ends the shell at once while the child ignores it (SIG_IGN survives the exec); only
      * the SIGKILL escalation after the grace can end the child, and it must fire although the shell
      * is gone. */
@@ -325,24 +319,24 @@ static void test_kill_escalates_past_term_exiting_shell(void)
     free(out);
 
     out = kill_id(id ? id : "?");
-    EXPECT(strstr(out, "killed (signal ") != NULL);
+    expect_task_stopped(out);
     free(out);
     EXPECT(process_is_gone(child_pid));
     free(id);
-    unsetenv("HAX_BASH_TRANSITION_MIN_BYTES");
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_TRANSITION_MIN_BYTES");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_kill_grace_covers_redirected_cleanup(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+#ifdef _WIN32
+    T_SKIP("native Windows jobs terminate immediately without a TERM grace window");
+#endif
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     /* The cleanup takes a fifth of the grace: the TERM must have reached it, and the SIGKILL must
      * wait for it. */
-    setenv("HAX_BASH_TIMEOUT_GRACE", "500ms", 1);
-    char path[] = "/tmp/hax-test-task-cleanup-XXXXXX";
-    int fd = mkstemp(path);
-    EXPECT(fd >= 0);
-    close(fd);
+    t_env_set("HAX_BASH_TIMEOUT_GRACE", "500ms");
+    char *path = xasprintf("%s/pid", t_tempdir());
 
     /* The shell dies on SIGTERM at once (pipe EOF included: the child's output is redirected), yet
      * the child's TERM cleanup must still get the grace window. */
@@ -363,7 +357,7 @@ static void test_kill_grace_covers_redirected_cleanup(void)
     free(ready);
 
     out = kill_id(id ? id : "?");
-    EXPECT(strstr(out, "killed (signal ") != NULL);
+    expect_task_stopped(out);
     free(out);
     free(id);
 
@@ -372,14 +366,14 @@ static void test_kill_grace_covers_redirected_cleanup(void)
     if (content)
         EXPECT_STR_EQ(content, "bye\n");
     free(content);
-    unlink(path);
-    setenv("HAX_BASH_TIMEOUT_GRACE", TEST_KILL_GRACE, 1);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    free(path);
+    t_env_set("HAX_BASH_TIMEOUT_GRACE", TEST_KILL_GRACE);
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_task_list_snapshots_running_task(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *out = call_bash_background("sleep 30");
     char *id = extract_task_id(out);
     EXPECT(id != NULL);
@@ -402,16 +396,13 @@ static void test_task_list_snapshots_running_task(void)
 
     free(kill_id(id ? id : "?"));
     free(id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_shutdown_kills_running_tasks(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
-    char path[] = "/tmp/hax-test-task-shutdown-XXXXXX";
-    int fd = mkstemp(path);
-    EXPECT(fd >= 0);
-    close(fd);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
+    char *path = xasprintf("%s/pid", t_tempdir());
 
     char *cmd = xasprintf("echo $$ > %s; sleep 30", path);
     char *args = xasprintf("{\"command\":\"%s\",\"background\":true}", cmd);
@@ -423,16 +414,13 @@ static void test_shutdown_kills_running_tasks(void)
 
     /* The shutdown must not beat the shell to its pid write. */
     int pid = await_pid_file(path);
-    unlink(path);
+    free(path);
     EXPECT(pid > 0);
 
     task_registry_shutdown();
     EXPECT(task_running_count() == 0);
 
-    int alive = pid > 0 && kill(pid, 0) == 0;
-    if (alive)
-        kill(pid, SIGKILL);
-    EXPECT(!alive);
+    EXPECT(process_is_gone(pid));
 
     /* Numbering restarts with the emptied registry: the next conversation counts from t1. */
     char *gate = gate_create();
@@ -444,12 +432,12 @@ static void test_shutdown_kills_running_tasks(void)
     gate_release(gate);
     free(gate);
     free(wait_for_id("t1", 5));
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_finalize_tasks_resolves_record(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *out = call_bash_background("sleep 30");
     char *id = extract_task_id(out);
     EXPECT(id != NULL);
@@ -476,15 +464,15 @@ static void test_finalize_tasks_resolves_record(void)
         item_free(&session.items[i]);
     free(session.items);
     free(id);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 /* Fatal-signal handlers cannot run registry code, so the published pgid table alone must be enough
  * to take live task groups down. */
 static void test_fatal_hook_kills_task_groups(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
-    setenv("HAX_BASH_TRANSITION_MIN_BYTES", "2", 1); /* the pid line */
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
+    t_env_set("HAX_BASH_TRANSITION_MIN_BYTES", "2"); /* the pid line */
     /* Probe a group member rather than the shell: the killed shell stays an unreaped zombie (still
      * answering kill(pid, 0)) until the registry polls it. */
     char *out = call_bash_background("sleep 30 & echo $!; wait");
@@ -499,14 +487,14 @@ static void test_fatal_hook_kills_task_groups(void)
     EXPECT(process_is_gone(pid));
     free(wait_for_id(id, 5));
     free(id);
-    unsetenv("HAX_BASH_TRANSITION_MIN_BYTES");
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_TRANSITION_MIN_BYTES");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_running_task_cap_enforced(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
-    setenv("HAX_TASK_MAX_RUNNING", "1", 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
+    t_env_set("HAX_TASK_MAX_RUNNING", "1");
     char *gate = gate_create();
     char *cmd = xasprintf("read -r _ <%s", gate);
     char *out = call_bash_background(cmd);
@@ -522,31 +510,31 @@ static void test_running_task_cap_enforced(void)
     free(out);
 
     /* At the cap a timed-out command cannot detach; it reverts to kill-at-timeout. */
-    setenv("HAX_BASH_TIMEOUT", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_TIMEOUT", TEST_YIELD);
     out = TOOL_BASH.run("{\"command\":\"sleep 30\"}", NULL);
     EXPECT(strstr(out, "[timed out after ") != NULL);
     EXPECT(strstr(out, "detached") == NULL);
     free(out);
-    unsetenv("HAX_BASH_TIMEOUT");
+    t_env_unset("HAX_BASH_TIMEOUT");
 
     /* Collecting the running task frees the slot. */
     gate_release(gate);
     free(gate);
     free(wait_for_id(id, 5));
     free(id);
-    setenv("HAX_BASH_TRANSITION_MIN_BYTES", "6", 1); /* "again\n" */
+    t_env_set("HAX_BASH_TRANSITION_MIN_BYTES", "6"); /* "again\n" */
     out = call_bash_background("echo again");
     EXPECT(strstr(out, "again") != NULL);
     EXPECT(strstr(out, "too many running tasks") == NULL);
     free(out);
-    unsetenv("HAX_BASH_TRANSITION_MIN_BYTES");
-    unsetenv("HAX_TASK_MAX_RUNNING");
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_TRANSITION_MIN_BYTES");
+    t_env_unset("HAX_TASK_MAX_RUNNING");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_no_tasks_disables_background_and_tools(void)
 {
-    setenv("HAX_NO_TASKS", "1", 1);
+    t_env_set("HAX_NO_TASKS", "1");
     char *out = call_bash_background("echo hi");
     EXPECT(strstr(out, "background tasks are disabled") != NULL);
     free(out);
@@ -557,7 +545,7 @@ static void test_no_tasks_disables_background_and_tools(void)
 
     EXPECT(TOOL_BASH.advertise() != &TOOL_BASH.def);
     EXPECT(TOOL_TASK_WAIT.advertise() == NULL);
-    unsetenv("HAX_NO_TASKS");
+    t_env_unset("HAX_NO_TASKS");
 
     EXPECT(TOOL_BASH.advertise() == &TOOL_BASH.def);
     EXPECT(TOOL_TASK_WAIT.advertise() == &TOOL_TASK_WAIT.def);
@@ -565,7 +553,7 @@ static void test_no_tasks_disables_background_and_tools(void)
 
 static void test_named_task_round_trip(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD, 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", TEST_YIELD);
     char *gate = gate_create();
     char *args = xasprintf("{\"command\":\"read -r _ <%s; echo named-done\","
                            "\"background\":true,\"name\":\"demo-job\"}",
@@ -606,7 +594,7 @@ static void test_named_task_round_trip(void)
     EXPECT(strstr(out, "; no new output]") != NULL);
     free(out);
     free(gate);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 }
 
 static void test_task_name_validation(void)
@@ -655,7 +643,7 @@ int main(void)
 {
     /* Kill waits sit out the full SIGTERM grace, so the default 2s would dominate the suite; tests
      * needing a real grace window override and restore this. */
-    setenv("HAX_BASH_TIMEOUT_GRACE", TEST_KILL_GRACE, 1);
+    t_env_set("HAX_BASH_TIMEOUT_GRACE", TEST_KILL_GRACE);
     test_background_fast_command_returns_sync();
     test_background_fast_failure_returns_sync();
     test_background_detaches_and_wait_collects();

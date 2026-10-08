@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <wchar.h>
 
+#ifdef _WIN32
+#include "text/unicode_cells.h"
+#endif
+
 static int byte_is_continuation(unsigned char byte)
 {
     return (byte & 0xC0) == 0x80;
@@ -131,7 +135,7 @@ size_t utf8_prev(const char *bytes, size_t offset)
 /* Terminal format controls can hide or reorder content even when libc assigns them zero width.
  * Variation selectors remain available for emoji presentation, though substituting ZWJ can break
  * joined emoji sequences. */
-static int codepoint_requires_substitution(wchar_t codepoint)
+static int codepoint_requires_substitution(uint32_t codepoint)
 {
     if (codepoint == 0x00AD) /* soft hyphen */
         return 1;
@@ -171,18 +175,40 @@ int utf8_codepoint_cells(const char *bytes, size_t length, size_t offset, size_t
         return 0;
     }
 
-    wchar_t codepoint;
+    uint32_t codepoint;
+#ifdef _WIN32
+    const unsigned char *input = (const unsigned char *)bytes + offset;
+    size_t decoded_len = utf8_sequence_length(input[0]);
+    if (decoded_len > length - offset || !utf8_sequence_is_valid(bytes + offset, decoded_len) ||
+        input[0] == 0) {
+        *codepoint_len = 1;
+        return -1;
+    }
+    codepoint = decoded_len == 1   ? input[0]
+                : decoded_len == 2 ? input[0] & 0x1F
+                : decoded_len == 3 ? input[0] & 0x0F
+                                   : input[0] & 0x07;
+    for (size_t i = 1; i < decoded_len; i++)
+        codepoint = (codepoint << 6) | (input[i] & 0x3F);
+#else
+    wchar_t wide_codepoint;
     mbstate_t state = {0};
-    size_t decoded_len = mbrtowc(&codepoint, bytes + offset, length - offset, &state);
+    size_t decoded_len = mbrtowc(&wide_codepoint, bytes + offset, length - offset, &state);
     if (decoded_len == (size_t)-1 || decoded_len == (size_t)-2 || decoded_len == 0) {
         *codepoint_len = 1;
         return -1;
     }
+    codepoint = (uint32_t)wide_codepoint;
+#endif
 
     *codepoint_len = decoded_len;
     if (codepoint_requires_substitution(codepoint))
         return -1;
-    return wcwidth(codepoint);
+#ifdef _WIN32
+    return unicode_codepoint_cells(codepoint);
+#else
+    return wcwidth((wchar_t)codepoint);
+#endif
 }
 
 void utf8_cell_stream_reset(struct utf8_cell_stream *stream)

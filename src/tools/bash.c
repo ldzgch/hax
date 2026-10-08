@@ -1,13 +1,15 @@
 /* SPDX-License-Identifier: MIT */
 #include <jansson.h>
-#include <limits.h>
 #include <stdlib.h>
-#include <unistd.h>
 
 #include "config.h"
 #include "provider.h"
 #include "tool.h"
 #include "xalloc.h"
+#include "system/path.h"
+#ifdef _WIN32
+#include "system/win_utf8.h"
+#endif
 #include "tools/bash_cd_strip.h"
 #include "tools/bash_classify.h"
 #include "tools/bash_process.h"
@@ -115,12 +117,21 @@ static char *preprocess_args(const char *args_json)
         json_decref(arguments);
         return NULL;
     }
-    char cwd[PATH_MAX];
-    if (!getcwd(cwd, sizeof(cwd))) {
+    char *cwd = path_cwd();
+    if (!cwd) {
         json_decref(arguments);
         return NULL;
     }
-    size_t command_offset = bash_strip_cd_prefix(command, cwd, getenv("HOME"));
+#ifdef _WIN32
+    char *home = win_utf8_getenv("HOME");
+#else
+    const char *home = getenv("HOME");
+#endif
+    size_t command_offset = bash_strip_cd_prefix(command, cwd, home);
+#ifdef _WIN32
+    free(home);
+#endif
+    free(cwd);
     if (command_offset == 0) {
         json_decref(arguments);
         return NULL;

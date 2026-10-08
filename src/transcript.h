@@ -35,14 +35,15 @@ void transcript_log_init(void);
 struct transcript_log;
 
 /* Open the configured plain-text transcript and write its header. Returns NULL when logging is
- * disabled or the file cannot be opened. */
+ * disabled or the file cannot be opened. The header is visible before returning. */
 struct transcript_log *transcript_log_open(const char *system_prompt, const struct tool_def *tools,
                                            size_t n_tools);
 
-/* Append items added since the previous call. NULL-safe. Call only after tool batches complete. */
+/* Append and flush items added since the previous call. NULL-safe. Call only after tool batches
+ * complete. */
 void transcript_log_append(struct transcript_log *log, const struct item *items, size_t n_items);
 
-/* Truncate the log and write a new header. NULL-safe. */
+/* Truncate the log and flush a new header. NULL-safe. */
 void transcript_log_reset(struct transcript_log *log, const char *system_prompt,
                           const struct tool_def *tools, size_t n_tools);
 

@@ -4,7 +4,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -12,7 +11,11 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
+#ifndef _WIN32
 #include <sys/wait.h>
+#else
+#define SIGKILL 9
+#endif
 
 #include "buf.h"
 #include "config.h"
@@ -41,7 +44,7 @@ struct task {
     struct task *next;
     char id[TASK_NAME_MAX + 1];
     char *command;
-    pid_t pid;
+    intptr_t pid;
     int pipe_fd;  /* -1 once the drainer is joined */
     int spool_fd; /* -1 when the spool could not be created */
     char *spool_path;
@@ -107,8 +110,7 @@ static void task_drain(struct bg_job *job, void *arg)
     for (;;) {
         if (bg_job_cancel_requested(job))
             break;
-        struct pollfd pfd = {.fd = t->pipe_fd, .events = POLLIN};
-        int poll_result = poll(&pfd, 1, 100);
+        int poll_result = fd_pipe_wait_readable(t->pipe_fd, 100);
         if (poll_result < 0) {
             if (errno == EINTR)
                 continue;
@@ -199,12 +201,8 @@ static void task_poll(struct task *t)
         /* Anything still in the group closed its output and is untrackable; kill it while
          * the unreaped zombie still reserves the group. Usually a no-op on the zombie. */
         bash_signal_process_tree(t->pid, SIGKILL);
-        bash_shell_pgid_retract(t->pid);
         int status = 0;
-        pid_t reaped;
-        while ((reaped = waitpid(t->pid, &status, 0)) < 0 && errno == EINTR)
-            ;
-        t->wait_status = reaped == t->pid ? status : 0;
+        t->wait_status = bash_process_wait(t->pid, &status) == 0 ? status : 0;
         t->done = 1;
         /* The reap may run long after the exit (the next prompt, minutes later); the
          * drainer's EOF stamp is the closest observation of the real finish. */
@@ -304,7 +302,7 @@ char *task_name_error(const char *name)
     return NULL;
 }
 
-const char *task_adopt(pid_t pid, int pipe_fd, const char *command, const char *name,
+const char *task_adopt(intptr_t pid, int pipe_fd, const char *command, const char *name,
                        long started_ms, int spool_fd, char *spool_path, size_t spooled_bytes,
                        int binary, int pipe_eof)
 {
@@ -330,10 +328,12 @@ const char *task_adopt(pid_t pid, int pipe_fd, const char *command, const char *
     t->eof = pipe_eof;
     pthread_mutex_init(&t->lock, NULL);
 
-    /* Task descriptors outlive this tool call, so later commands must not inherit them. */
+/* Task descriptors outlive this tool call, so later commands must not inherit them. */
+#ifndef _WIN32
     fcntl(pipe_fd, F_SETFD, FD_CLOEXEC);
     if (spool_fd >= 0)
         fcntl(spool_fd, F_SETFD, FD_CLOEXEC);
+#endif
 
     if (pipe_eof) {
         close(pipe_fd);
@@ -370,12 +370,18 @@ static void append_status_phrase(struct buf *out, struct task *t)
     char phrase[64];
     if (!t->done)
         snprintf(phrase, sizeof(phrase), "still running (%s)", elapsed);
+#ifndef _WIN32
     else if (WIFSIGNALED(t->wait_status))
         snprintf(phrase, sizeof(phrase), "killed (signal %d) after %s", WTERMSIG(t->wait_status),
                  elapsed);
     else
         snprintf(phrase, sizeof(phrase), "finished (exit %d) after %s",
                  WIFEXITED(t->wait_status) ? WEXITSTATUS(t->wait_status) : -1, elapsed);
+#else
+    else
+        snprintf(phrase, sizeof(phrase), "finished (exit %u) after %s", (unsigned)t->wait_status,
+                 elapsed);
+#endif
     buf_append_str(out, phrase);
     if (t->orphans_killed)
         buf_append_str(out, "; orphaned processes killed");
@@ -590,7 +596,7 @@ static size_t resolve_targets(const char *const *ids, size_t n_ids, struct task 
 
 static void sleep_poll_interval(void)
 {
-    poll(NULL, 0, TASK_POLL_INTERVAL_MS);
+    clock_sleep_ms(TASK_POLL_INTERVAL_MS);
 }
 
 static long deadline_after(long now_ms, long duration_ms)
@@ -624,8 +630,8 @@ static void stream_new_spool(struct task *t, const struct task_shared_snapshot *
     char chunk[8192];
     while (*cursor < snap->spooled_bytes) {
         size_t want = snap->spooled_bytes - *cursor;
-        ssize_t bytes_read =
-            pread(t->spool_fd, chunk, want < sizeof(chunk) ? want : sizeof(chunk), (off_t)*cursor);
+        ssize_t bytes_read = fd_read_at(
+            t->spool_fd, chunk, want < sizeof(chunk) ? want : sizeof(chunk), (int64_t)*cursor);
         if (bytes_read < 0 && errno == EINTR)
             continue;
         if (bytes_read <= 0)
@@ -851,8 +857,13 @@ size_t task_list(struct task_info **rows_out)
         rows[i].command = t->command;
         rows[i].spool_path = snap.spool_write_failed ? NULL : t->spool_path;
         rows[i].running = !t->done;
+#ifdef _WIN32
+        rows[i].exit_code = t->done ? t->wait_status : 0;
+        rows[i].term_signal = 0;
+#else
         rows[i].exit_code = t->done && WIFEXITED(t->wait_status) ? WEXITSTATUS(t->wait_status) : 0;
         rows[i].term_signal = t->done && WIFSIGNALED(t->wait_status) ? WTERMSIG(t->wait_status) : 0;
+#endif
         rows[i].elapsed_ms = (t->done ? t->finished_ms : monotonic_ms()) - t->started_ms;
         rows[i].total_bytes = snap.total_bytes;
         i++;
@@ -922,9 +933,7 @@ void task_registry_shutdown(void)
         }
         if (!t->done) {
             bash_signal_process_tree(t->pid, SIGKILL);
-            bash_shell_pgid_retract(t->pid);
-            while (waitpid(t->pid, &t->wait_status, 0) < 0 && errno == EINTR)
-                ;
+            bash_process_wait(t->pid, &t->wait_status);
             t->done = 1;
         }
         task_free(t);

@@ -8,6 +8,7 @@
 #include "agent_loop.h"
 #include "agent_tool.h"
 #include "config.h"
+#include "env.h"
 #include "harness.h"
 #include "provider.h"
 #include "session.h"
@@ -475,8 +476,8 @@ static int capture_stream(struct provider *p, const struct context *ctx, const c
 /* The loop hands the session log's conversation id to the provider, and nothing without one. */
 static void test_loop_passes_conversation_id_to_provider(void)
 {
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
-    unsetenv("HAX_NO_SESSION");
+    t_env_set("XDG_STATE_HOME", t_tempdir());
+    t_env_unset("HAX_NO_SESSION");
     struct session_log *slog = session_log_open("test", "model", NULL, NULL, NULL);
     EXPECT(slog != NULL);
 
@@ -1340,12 +1341,12 @@ static void observed_task_note(const char *text, void *user)
 
 static void test_loop_injects_finished_task_note(void)
 {
-    setenv("HAX_BASH_BACKGROUND_YIELD", "30ms", 1);
+    t_env_set("HAX_BASH_BACKGROUND_YIELD", "30ms");
     char *launch =
         TOOL_BASH.run("{\"command\":\"sleep 0.1; echo bg-note-done\",\"background\":true}", NULL);
     EXPECT(strstr(launch, "detached as task t") != NULL);
     free(launch);
-    unsetenv("HAX_BASH_BACKGROUND_YIELD");
+    t_env_unset("HAX_BASH_BACKGROUND_YIELD");
 
     time_t start = time(NULL);
     while (task_running_count() > 0 && time(NULL) - start < 10) {

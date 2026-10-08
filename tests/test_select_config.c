@@ -1,14 +1,21 @@
 /* SPDX-License-Identifier: MIT */
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 
 #include "agent.h"
 #include "agent_core.h"
 #include "config.h"
 #include "diag.h"
 #include "effort.h"
+#include "env.h"
+#include "files.h"
 #include "harness.h"
 #include "loopback.h"
 #include "model_meta.h"
@@ -89,7 +96,7 @@ static void reset(void)
                           "HAX_DISPLAY_WIDTH", "HAX_PROVIDER", "HAX_MODEL",
                           "HAX_EFFORT",        "HAX_PRESET",   "HAX_OPENAI_BASE_URL"};
     for (size_t i = 0; i < sizeof(vars) / sizeof(vars[0]); i++)
-        unsetenv(vars[i]);
+        t_env_unset(vars[i]);
     script_picks(NULL, NULL);
     g_apply_calls = 0;
     g_apply_replace_model = 0;
@@ -115,7 +122,7 @@ static char *run(struct agent_state *state, const char *arg)
     fflush(stdout);
     int saved = dup(STDOUT_FILENO);
     EXPECT(saved >= 0);
-    FILE *tmp = tmpfile();
+    FILE *tmp = t_tmpfile();
     EXPECT(tmp != NULL);
     EXPECT(dup2(fileno(tmp), STDOUT_FILENO) >= 0);
 
@@ -308,7 +315,7 @@ static int test_list_models(struct provider *provider, struct model_info **model
 static void test_effort_persists_after_reconfiguration(void)
 {
     reset();
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
+    t_env_set("XDG_STATE_HOME", t_tempdir());
     struct agent_state *state = fresh_state();
     struct agent_session session = {.model = xstrdup("model"), .effort = xstrdup("low")};
     struct provider provider = {.name = "test", .list_efforts = test_list_efforts};
@@ -337,7 +344,7 @@ static void test_effort_persists_after_reconfiguration(void)
     free(session.model);
     free(session.effort);
     config_free();
-    unsetenv("XDG_STATE_HOME");
+    t_env_unset("XDG_STATE_HOME");
 }
 
 static void test_effort_argument_applies_without_picker(void)

@@ -9,6 +9,51 @@ notes (see [docs/releasing.md](docs/releasing.md)).
 
 ### Added
 
+- Windows filesystem operations now use extended-length paths for drive and UNC paths, including
+  deep project paths, without changing the path spelling passed to Git Bash.
+
+- Native Windows project instructions and skill discovery with Unicode working directories,
+  skill names, and home paths; symlinked global skill roots retain their precedence.
+
+- Native Windows Bash preprocessing strips redundant working-directory prefixes in drive, UNC,
+  and Git Bash drive paths, with Unicode directory and home values.
+
+- Native Windows transcript and HTTP trace files with Unicode paths, private creation, and
+  non-inheritable handles; completed transcript turns remain visible to readers.
+
+- Native Windows foreground Bash commands and background tasks, with job-owned descendants,
+  streamed output, task collection, and cleanup on cancellation or exit. The native executable
+  links its thread runtime statically and needs no toolchain DLL directory on `PATH`.
+- Native Windows conversation-history paging through a private binary-safe capture stream.
+- Native Windows backends for background jobs, secure random bytes, idle sleep inhibition, and
+  opening the default browser as part of the ongoing Windows port.
+- Windows drive and UNC path handling, Unicode home-directory lookup, and native app-data defaults
+  for configuration, sessions, and cache files; explicit XDG locations remain supported.
+- Native Windows file reads and atomic writes, including Unicode names, symlink targets, and
+  private file ACLs; Windows executable lookup uses `PATH` and `PATHEXT`.
+- Native Windows credential-store locking and private lock-file permissions.
+- Native Windows session-file writers with private permissions, binary-safe appends, and locks
+  that protect active writers from pruning.
+- Native Windows session listing with Unicode filenames and sub-second timestamps, including
+  dates beyond 2038.
+- Native Windows session pruning with active-writer protection and pinned directories that
+  prevent cleanup from being redirected by directory replacement.
+- Native Windows Unicode clipboard text and image paste, including bitmap-to-PNG conversion;
+  copying over SSH retains OSC 52 terminal support.
+- Native Windows helper-process execution through Git Bash, including Unicode arguments,
+  bounded output capture, detached helpers, and process-tree cleanup.
+- Native Windows child-environment snapshots preserve Unicode values and apply tool overrides
+  without changing the parent environment.
+- Native Windows console key decoding and shared terminal operations for the editor and pickers.
+- Native Windows model-routing glob matching, including Unicode wildcards and bracket ranges.
+- Native Windows OAuth callback listeners with IPv4/IPv6 loopback handling, cancellation, and
+  bounded socket I/O.
+- Native Windows Escape cancellation and console control handling, including Ctrl-C abort and
+  Ctrl-Break pause requests in headless runs.
+- Native Windows temporary files with Unicode names and private permissions; cleanup retries
+  files that are still in use.
+- Locale-independent Unicode cell measurement for native Windows, including supplementary-plane
+  emoji and combining marks.
 - Shell-like Tab completion of `/` commands and their arguments.
 - A dim placeholder after a `/` command shows the arguments it takes.
 - `/provider`, `/model`, and `/effort` take an id or level and apply it without a picker:
@@ -25,6 +70,15 @@ notes (see [docs/releasing.md](docs/releasing.md)).
   without their reasoning, such as a proxy to DeepSeek.
 
 ### Changed
+
+- Windows settings read Unicode environment values and preserve explicitly empty overrides;
+  prompt-file settings recognize drive and UNC paths.
+- Windows session records become visible to readers before the writer closes, supporting live
+  history and reliable resume after interruption.
+- The lint runner accepts either Python 3 launcher name and obtains the native Windows target and
+  MinGW headers from the configured compiler.
+- Native Windows test fixtures verify catalog refresh and concurrent credential updates in owned
+  child processes, with scratch cleanup that preserves external read-only hard links.
 
 - `HAX_REASONING_ROUNDTRIP` is renamed `HAX_OPENAI_REASONING_ROUNDTRIP`, like the other variables
   that configure `openai-compatible`; the old name is no longer read.
@@ -64,6 +118,13 @@ notes (see [docs/releasing.md](docs/releasing.md)).
   and `blame`, including behind global options such as `-C`.
 
 ### Fixed
+
+- Native Windows temporary files work when the system temp directory has a trailing separator.
+- Windows @file completion recognizes drive-rooted and UNC path queries.
+- Windows session listing and prompt history use the same directory for forward-slash and
+  backslash spellings of the working directory, preserving existing native session locations.
+- Native Windows file reads accept Unicode paths and preserve CRLF and binary image bytes. File
+  tools reject named pipes without waiting for a writer or replacing the pipe.
 
 - Ollama models now get their own earlier reasoning back in later requests. Thinking models could
   otherwise degrade over a long session, especially across tool calls.

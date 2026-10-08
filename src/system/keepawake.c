@@ -1,11 +1,17 @@
 /* SPDX-License-Identifier: MIT */
 #include "system/keepawake.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <signal.h>
 #include <unistd.h>
+#endif
 
 #include "config.h"
+#ifndef _WIN32
 #include "system/spawn.h"
+#endif
 
 #ifdef __APPLE__
 #include <stdio.h>
@@ -14,6 +20,9 @@
 #endif
 
 /* Calls occur on the main thread at the user-turn boundary. */
+#ifdef _WIN32
+static int sleep_inhibited;
+#else
 static pid_t helper_pid;
 
 static void reap_dead_helper(void)
@@ -102,19 +111,29 @@ static void spawn_helper(void)
     helper_pid = pid;
 #endif
 }
+#endif
 
 void keepawake_acquire(void)
 {
     if (!config_bool_or("keep_awake", 1))
         return;
+#ifdef _WIN32
+    if (!sleep_inhibited)
+        sleep_inhibited = SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) != 0;
+#else
     reap_dead_helper();
     if (helper_pid > 0)
         return;
     spawn_helper();
+#endif
 }
 
 void keepawake_release(void)
 {
+#ifdef _WIN32
+    if (sleep_inhibited && SetThreadExecutionState(ES_CONTINUOUS))
+        sleep_inhibited = 0;
+#else
     if (helper_pid <= 0)
         return;
     kill(helper_pid, SIGTERM);
@@ -122,4 +141,5 @@ void keepawake_release(void)
      * macOS) must not hang the turn boundary; escalate instead of waiting forever. */
     (void)spawn_wait_child_timeout(helper_pid, 500);
     helper_pid = 0;
+#endif
 }

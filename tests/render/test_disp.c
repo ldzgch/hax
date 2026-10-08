@@ -4,19 +4,19 @@
 #include <string.h>
 
 #include "harness.h"
+#include "stream_capture.h"
 #include "render/disp.h"
 
 struct capture {
     struct disp disp;
     FILE *stream;
-    char *bytes;
-    size_t len;
+    struct t_stream_capture capture;
 };
 
 static int capture_init(struct capture *capture, size_t committed_newlines)
 {
     memset(capture, 0, sizeof(*capture));
-    capture->stream = open_memstream(&capture->bytes, &capture->len);
+    capture->stream = t_stream_capture_open(&capture->capture);
     EXPECT(capture->stream != NULL);
     if (!capture->stream)
         return 0;
@@ -28,13 +28,12 @@ static int capture_init(struct capture *capture, size_t committed_newlines)
 static const char *capture_read(struct capture *capture)
 {
     disp_flush(&capture->disp);
-    return capture->bytes ? capture->bytes : "";
+    return t_stream_capture_read(&capture->capture);
 }
 
 static void capture_free(struct capture *capture)
 {
-    fclose(capture->stream);
-    free(capture->bytes);
+    t_stream_capture_close(&capture->capture);
 }
 
 static void test_putc_writes_visible_bytes(void)

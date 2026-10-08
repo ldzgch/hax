@@ -2,13 +2,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <sys/stat.h>
 #include <sys/types.h>
+#endif
 
+#ifndef _WIN32
+#include "env.h"
+#endif
 #include "harness.h"
 #include "paste_image.h"
 #include "xalloc.h"
+#ifndef _WIN32
 #include "system/tempfiles.h"
+#endif
 
 static void expect_normalized_text(const char *input, size_t input_len, const char *expected)
 {
@@ -48,6 +55,7 @@ static void test_normalize_mixed(void)
     expect_normalized_text("x\r\n\0y\rz", 7, "x\ny\nz");
 }
 
+#ifndef _WIN32
 /* A complete 2x3 RGB PNG accepted by image_sniff(). */
 static const unsigned char TINY_PNG[] = {
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -132,9 +140,9 @@ static void test_capture_image_to_marker(void)
 {
     char *img = xasprintf("%s/clip.png", t_tempdir());
     write_file(img, TINY_PNG, sizeof(TINY_PNG), 0644);
-    setenv("FAKE_IMG_FILE", img, 1);
-    setenv("FAKE_IMG_MIME", "image/png", 1);
-    unsetenv("FAKE_TEXT");
+    t_env_set("FAKE_IMG_FILE", img);
+    t_env_set("FAKE_IMG_MIME", "image/png");
+    t_env_unset("FAKE_TEXT");
 
     char *marker = paste_image_capture();
     EXPECT(marker != NULL);
@@ -161,9 +169,9 @@ static void test_capture_garbage_image_falls_back_to_text(void)
 {
     char *img = xasprintf("%s/garbage.png", t_tempdir());
     write_file(img, TINY_PNG, 16, 0644);
-    setenv("FAKE_IMG_FILE", img, 1);
-    setenv("FAKE_IMG_MIME", "image/png", 1);
-    setenv("FAKE_TEXT", "hi\r\nthere", 1);
+    t_env_set("FAKE_IMG_FILE", img);
+    t_env_set("FAKE_IMG_MIME", "image/png");
+    t_env_set("FAKE_TEXT", "hi\r\nthere");
 
     char *out = paste_image_capture();
     EXPECT(out != NULL);
@@ -176,9 +184,9 @@ static void test_capture_garbage_image_falls_back_to_text(void)
 
 static void test_capture_empty_clipboard_returns_null(void)
 {
-    unsetenv("FAKE_IMG_FILE");
-    unsetenv("FAKE_IMG_MIME");
-    unsetenv("FAKE_TEXT");
+    t_env_unset("FAKE_IMG_FILE");
+    t_env_unset("FAKE_IMG_MIME");
+    t_env_unset("FAKE_TEXT");
     EXPECT(paste_image_capture() == NULL);
 }
 
@@ -191,9 +199,9 @@ static void test_capture_negotiates_non_png_type(void)
     };
     char *img = xasprintf("%s/clip.gif", t_tempdir());
     write_file(img, TINY_GIF, sizeof(TINY_GIF), 0644);
-    setenv("FAKE_IMG_FILE", img, 1);
-    setenv("FAKE_IMG_MIME", "image/gif", 1);
-    unsetenv("FAKE_TEXT");
+    t_env_set("FAKE_IMG_FILE", img);
+    t_env_set("FAKE_IMG_MIME", "image/gif");
+    t_env_unset("FAKE_TEXT");
 
     char *marker = paste_image_capture();
     EXPECT(marker != NULL);
@@ -217,10 +225,10 @@ static void test_capture_persist_failure_falls_back_to_text(void)
 
     char *img = xasprintf("%s/clip.png", t_tempdir());
     write_file(img, TINY_PNG, sizeof(TINY_PNG), 0644);
-    setenv("FAKE_IMG_FILE", img, 1);
-    setenv("FAKE_IMG_MIME", "image/png", 1);
-    setenv("FAKE_TEXT", "fallback text", 1);
-    setenv("TMPDIR", "/nonexistent-hax/xyz", 1);
+    t_env_set("FAKE_IMG_FILE", img);
+    t_env_set("FAKE_IMG_MIME", "image/png");
+    t_env_set("FAKE_TEXT", "fallback text");
+    t_env_set("TMPDIR", "/nonexistent-hax/xyz");
 
     char *out = paste_image_capture();
     EXPECT(out != NULL);
@@ -230,12 +238,12 @@ static void test_capture_persist_failure_falls_back_to_text(void)
     }
 
     if (saved_tmpdir) {
-        setenv("TMPDIR", saved_tmpdir, 1);
+        t_env_set("TMPDIR", saved_tmpdir);
         free(saved_tmpdir);
     } else {
-        unsetenv("TMPDIR");
+        t_env_unset("TMPDIR");
     }
-    unsetenv("FAKE_TEXT");
+    t_env_unset("FAKE_TEXT");
     free(img);
 }
 
@@ -243,11 +251,11 @@ static void test_capture_wayland_prevents_x11_image_fallback(void)
 {
     char *img = xasprintf("%s/stale.png", t_tempdir());
     write_file(img, TINY_PNG, sizeof(TINY_PNG), 0644);
-    unsetenv("FAKE_IMG_MIME");
-    unsetenv("FAKE_IMG_FILE");
-    setenv("FAKE_TEXT", "current wayland text", 1);
-    setenv("FAKE_X11_IMG_MIME", "image/png", 1);
-    setenv("FAKE_X11_IMG_FILE", img, 1);
+    t_env_unset("FAKE_IMG_MIME");
+    t_env_unset("FAKE_IMG_FILE");
+    t_env_set("FAKE_TEXT", "current wayland text");
+    t_env_set("FAKE_X11_IMG_MIME", "image/png");
+    t_env_set("FAKE_X11_IMG_FILE", img);
 
     char *out = paste_image_capture();
     EXPECT(out != NULL);
@@ -255,24 +263,25 @@ static void test_capture_wayland_prevents_x11_image_fallback(void)
         EXPECT_STR_EQ(out, "current wayland text");
         free(out);
     }
-    unsetenv("FAKE_X11_IMG_MIME");
-    unsetenv("FAKE_X11_IMG_FILE");
-    unsetenv("FAKE_TEXT");
+    t_env_unset("FAKE_X11_IMG_MIME");
+    t_env_unset("FAKE_X11_IMG_FILE");
+    t_env_unset("FAKE_TEXT");
     free(img);
 }
 
 static void test_capture_wayland_prevents_x11_text_fallback(void)
 {
-    setenv("FAKE_IMG_MIME", "image/bmp", 1);
-    unsetenv("FAKE_IMG_FILE");
-    unsetenv("FAKE_TEXT");
-    setenv("FAKE_X11_TEXT", "stale x11 text", 1);
+    t_env_set("FAKE_IMG_MIME", "image/bmp");
+    t_env_unset("FAKE_IMG_FILE");
+    t_env_unset("FAKE_TEXT");
+    t_env_set("FAKE_X11_TEXT", "stale x11 text");
 
     EXPECT(paste_image_capture() == NULL);
 
-    unsetenv("FAKE_X11_TEXT");
-    unsetenv("FAKE_IMG_MIME");
+    t_env_unset("FAKE_X11_TEXT");
+    t_env_unset("FAKE_IMG_MIME");
 }
+#endif
 
 static void test_uris_plain_file(void)
 {
@@ -316,6 +325,9 @@ static void test_uris_multiple_lines(void)
 
 static void test_uris_fifo_is_not_opened(void)
 {
+#ifdef _WIN32
+    T_SKIP("Windows has no POSIX FIFO files");
+#else
     /* Opening this writer-less FIFO would hang the test. */
     char *fifo = xasprintf("%s/pipe.png", t_tempdir());
     EXPECT(mkfifo(fifo, 0600) == 0);
@@ -330,6 +342,7 @@ static void test_uris_fifo_is_not_opened(void)
     }
     free(uri);
     free(fifo);
+#endif
 }
 
 static void test_uris_reject_non_uri_text(void)
@@ -351,12 +364,13 @@ int main(void)
     test_normalize_plain_passthrough();
     test_normalize_mixed();
 
+#ifndef _WIN32
     char *helpers = t_tempdir();
     install_fake_helpers(helpers);
     char *saved_path = t_path_prepend(helpers);
     free(saved_path); /* the stubs stay on PATH for every remaining test */
-    setenv("TMPDIR", t_tempdir(), 1);
-    setenv("WAYLAND_DISPLAY", "fake-0", 1);
+    t_env_set("TMPDIR", t_tempdir());
+    t_env_set("WAYLAND_DISPLAY", "fake-0");
 
     test_capture_image_to_marker();
     test_capture_garbage_image_falls_back_to_text();
@@ -365,6 +379,7 @@ int main(void)
     test_capture_persist_failure_falls_back_to_text();
     test_capture_wayland_prevents_x11_image_fallback();
     test_capture_wayland_prevents_x11_text_fallback();
+#endif
 
     test_uris_plain_file();
     test_uris_percent_decode_and_localhost();

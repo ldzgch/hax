@@ -2,16 +2,29 @@
 #include "terminal/width.h"
 
 #include <strings.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <unistd.h>
 #include <sys/ioctl.h>
+#endif
 
 #include "config.h"
 
 int term_width(void)
 {
+#ifdef _WIN32
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info)) {
+        int columns = info.srWindow.Right - info.srWindow.Left + 1;
+        if (columns > 0)
+            return columns;
+    }
+#else
     struct winsize ws;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
         return ws.ws_col;
+#endif
     return 100;
 }
 

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include <stdlib.h>
 
+#include "env.h"
 #include "harness.h"
 #include "terminal/width.h"
 
@@ -16,13 +17,13 @@ static void test_auto_display_width(void)
 
 static void test_display_width_auto(void)
 {
-    unsetenv("HAX_DISPLAY_WIDTH");
+    t_env_unset("HAX_DISPLAY_WIDTH");
     int expected = auto_display_width(term_width());
     EXPECT(display_width() == expected);
 
-    setenv("HAX_DISPLAY_WIDTH", "auto", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "auto");
     EXPECT(display_width() == expected);
-    unsetenv("HAX_DISPLAY_WIDTH");
+    t_env_unset("HAX_DISPLAY_WIDTH");
 }
 
 static void test_display_width_env_override(void)
@@ -30,30 +31,30 @@ static void test_display_width_env_override(void)
     int terminal = term_width();
     if (terminal < 20)
         terminal = 20;
-    setenv("HAX_DISPLAY_WIDTH", "terminal", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "terminal");
     EXPECT(display_width() == terminal);
-    setenv("HAX_DISPLAY_WIDTH", "TERMINAL", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "TERMINAL");
     EXPECT(display_width() == terminal);
 
     /* An exact width bypasses both terminal detection and the soft cap. */
-    setenv("HAX_DISPLAY_WIDTH", "120", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "120");
     EXPECT(display_width() == 120);
-    setenv("HAX_DISPLAY_WIDTH", "60", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "60");
     EXPECT(display_width() == 60);
-    setenv("HAX_DISPLAY_WIDTH", "500", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "500");
     EXPECT(display_width() == 500);
 
     int automatic = auto_display_width(term_width());
     /* Out-of-range, malformed, and overflowing values fall back to auto. */
-    setenv("HAX_DISPLAY_WIDTH", "5", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "5");
     EXPECT(display_width() == automatic);
-    setenv("HAX_DISPLAY_WIDTH", "abc", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "abc");
     EXPECT(display_width() == automatic);
-    setenv("HAX_DISPLAY_WIDTH", "80x", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "80x");
     EXPECT(display_width() == automatic);
-    setenv("HAX_DISPLAY_WIDTH", "999999999999999999999999999", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "999999999999999999999999999");
     EXPECT(display_width() == automatic);
-    unsetenv("HAX_DISPLAY_WIDTH");
+    t_env_unset("HAX_DISPLAY_WIDTH");
 }
 
 static void test_reflow_physical_rows(void)

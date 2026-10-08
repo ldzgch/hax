@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "files.h"
 #include "harness.h"
 #include "transport/ca.h"
 
@@ -16,10 +17,10 @@ static void make_dir(const char *root, const char *rel)
 
     for (char *slash = path + strlen(root) + 1; (slash = strchr(slash, '/')); slash++) {
         *slash = '\0';
-        mkdir(path, 0755);
+        t_mkdir(path, 0755);
         *slash = '/';
     }
-    mkdir(path, 0755);
+    t_mkdir(path, 0755);
 }
 
 static void make_file(const char *root, const char *rel)

@@ -5,7 +5,7 @@
 /* Set LC_CTYPE, and only LC_CTYPE, to a UTF-8 locale: LC_NUMERIC under the user's locale can put a
  * decimal comma in serialized JSON. Publishes the choice to the environment unless a non-UTF-8
  * LC_ALL is pinned there. Call before other initialization, and before any thread reads the
- * environment. */
+ * environment. Native Windows decoding is locale-independent; CRT locale setup is best-effort. */
 void locale_init_utf8(void);
 /* Return whether this process can decode and measure multibyte text. */
 int locale_have_utf8(void);

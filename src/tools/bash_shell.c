@@ -1,12 +1,18 @@
 /* SPDX-License-Identifier: MIT */
 #include "tools/bash_shell.h"
 
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 #include "config.h"
 #include "diag.h"
-#include "xalloc.h"
 #include "system/fs.h"
+#ifdef _WIN32
+#include "system/win_bash.h"
+#else
+#include "xalloc.h"
+#endif
 
 char *bash_resolve_shell(void)
 {
@@ -23,10 +29,14 @@ char *bash_resolve_shell(void)
         }
     }
 
+#ifdef _WIN32
+    return win_bash_path();
+#else
     char *shell_path = fs_which("bash");
     if (shell_path)
         return shell_path;
     if (access("/bin/bash", X_OK) == 0)
         return xstrdup("/bin/bash");
     return xstrdup("/bin/sh");
+#endif
 }

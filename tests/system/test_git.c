@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT */
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,10 +7,15 @@
 #include <sys/stat.h>
 /* The wait macros are provided by <sys/wait.h> per POSIX; glibc also leaks
  * them through <stdlib.h>, so the include cleaner cannot attribute them. */
+#ifndef _WIN32
 #include <sys/wait.h> // IWYU pragma: keep
+#endif
 
 #include "buf.h"
+#include "env.h"
+#include "files.h"
 #include "harness.h"
+#include "process.h"
 #include "xalloc.h"
 #include "system/fs.h"
 #include "system/git.h"
@@ -25,9 +31,14 @@ static int git_available(void)
 
 static void run_quiet(const char *command)
 {
+#ifdef _WIN32
+    char *silenced = xasprintf(
+        "GIT_TERMINAL_PROMPT=0 GIT_EDITOR=: GIT_SEQUENCE_EDITOR=: %s </dev/null", command);
+#else
     char *silenced = xasprintf("%s >/dev/null 2>&1", command);
+#endif
     int status = spawn_shell_wait(silenced);
-    EXPECT(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    EXPECT(spawn_status_success(status));
     free(silenced);
 }
 
@@ -36,19 +47,37 @@ static void run_quiet(const char *command)
 static void enter_tempdir(void)
 {
     char *dir = t_tempdir();
-    EXPECT(chdir(dir) == 0);
-    setenv("GIT_CEILING_DIRECTORIES", dir, 1);
-    setenv("GIT_CONFIG_GLOBAL", "/dev/null", 1);
-    setenv("GIT_CONFIG_SYSTEM", "/dev/null", 1);
-    setenv("GIT_AUTHOR_NAME", "hax test", 1);
-    setenv("GIT_AUTHOR_EMAIL", "test@example.com", 1);
-    setenv("GIT_COMMITTER_NAME", "hax test", 1);
-    setenv("GIT_COMMITTER_EMAIL", "test@example.com", 1);
+    EXPECT(t_chdir(dir) == 0);
+    t_env_set("GIT_CEILING_DIRECTORIES", dir);
+#ifdef _WIN32
+    char *global_config = xasprintf("%s/gitconfig", t_tempdir());
+    EXPECT(fs_write_atomic(global_config, "", 0, 0) == 0);
+    t_env_set("GIT_CONFIG_GLOBAL", global_config);
+    free(global_config);
+    t_env_set("GIT_CONFIG_NOSYSTEM", "1");
+    t_env_set("GIT_TERMINAL_PROMPT", "0");
+    t_env_set("GIT_EDITOR", ":");
+    t_env_set("GIT_SEQUENCE_EDITOR", ":");
+    t_env_set("GIT_CONFIG_COUNT", "2");
+    t_env_set("GIT_CONFIG_KEY_0", "commit.gpgsign");
+    t_env_set("GIT_CONFIG_VALUE_0", "false");
+    t_env_set("GIT_CONFIG_KEY_1", "core.hooksPath");
+    char *hooks_dir = t_tempdir();
+    t_env_set("GIT_CONFIG_VALUE_1", hooks_dir);
+#else
+    t_env_set("GIT_CONFIG_GLOBAL", "/dev/null");
+    t_env_set("GIT_CONFIG_SYSTEM", "/dev/null");
+#endif
+    t_env_set("GIT_AUTHOR_NAME", "hax test");
+    t_env_set("GIT_AUTHOR_EMAIL", "test@example.com");
+    t_env_set("GIT_COMMITTER_NAME", "hax test");
+    t_env_set("GIT_COMMITTER_EMAIL", "test@example.com");
 }
 
 static void init_repo(void)
 {
     run_quiet("git init -q");
+    EXPECT(fs_entry_exists(".git") == 1);
     /* Not `git init -b`: older git rejects the flag, and the branch name must be predictable. */
     run_quiet("git symbolic-ref HEAD refs/heads/topic");
 }
@@ -75,12 +104,13 @@ static void test_commit_is_described(void)
     init_repo();
     run_quiet("echo hello > file.txt");
     run_quiet("git add file.txt");
-    run_quiet("git commit -q -m 'Add the first file' -m 'Body text ignored'");
+    run_quiet("git -c commit.gpgsign=false commit -q -m 'Add the first file' "
+              "-m 'Body text ignored'");
 
     struct git_state state;
     git_state_probe(&state);
-    EXPECT_STR_EQ(state.branch, "topic");
-    EXPECT_STR_EQ(state.subject, "Add the first file");
+    EXPECT(state.branch && strcmp(state.branch, "topic") == 0);
+    EXPECT(state.subject && strcmp(state.subject, "Add the first file") == 0);
     EXPECT(state.commit != NULL);
     if (state.commit)
         EXPECT(strlen(state.commit) >= 7 && strchr(state.commit, '\n') == NULL);
@@ -96,7 +126,7 @@ static void test_unborn_branch_has_no_commit(void)
 
     struct git_state state;
     git_state_probe(&state);
-    EXPECT_STR_EQ(state.branch, "topic");
+    EXPECT(state.branch && strcmp(state.branch, "topic") == 0);
     EXPECT(state.commit == NULL);
     EXPECT(state.subject == NULL);
     git_state_free(&state);
@@ -110,13 +140,13 @@ static void test_detached_head_has_no_branch(void)
     init_repo();
     run_quiet("echo hello > file.txt");
     run_quiet("git add file.txt");
-    run_quiet("git commit -q -m 'Add the first file'");
+    run_quiet("git -c commit.gpgsign=false commit -q -m 'Add the first file'");
     run_quiet("git checkout -q --detach HEAD");
 
     struct git_state state;
     git_state_probe(&state);
     EXPECT(state.branch == NULL);
-    EXPECT_STR_EQ(state.subject, "Add the first file");
+    EXPECT(state.subject && strcmp(state.subject, "Add the first file") == 0);
     git_state_free(&state);
 }
 
@@ -125,6 +155,18 @@ static void test_detached_head_has_no_branch(void)
 static char *prepend_recording_git(const char *marker)
 {
     char *dir = t_tempdir();
+#ifdef _WIN32
+    char *path = xasprintf("%s/git.exe", dir);
+    char *program = t_program_path(NULL);
+    size_t length = 0;
+    char *body = fs_read_file(program, &length);
+    EXPECT(body != NULL);
+    if (body)
+        EXPECT(fs_write_atomic(path, body, length, 0) == 0);
+    free(body);
+    free(program);
+    t_env_set("HAX_TEST_RECORDING_GIT", marker);
+#else
     char *path = xasprintf("%s/git", dir);
     FILE *script = fopen(path, "w");
     EXPECT(script != NULL);
@@ -133,6 +175,7 @@ static char *prepend_recording_git(const char *marker)
         fclose(script);
     }
     EXPECT(chmod(path, 0755) == 0);
+#endif
     free(path);
     return t_path_prepend(dir);
 }
@@ -149,13 +192,14 @@ static void test_probe_runs_git_only_where_a_repository_may_be(void)
     git_state_free(&state);
 
     /* GIT_DIR may name a repository anywhere. */
-    setenv("GIT_DIR", "/nonexistent", 1);
+    t_env_set("GIT_DIR", "/nonexistent");
     git_state_probe(&state);
-    unsetenv("GIT_DIR");
+    t_env_unset("GIT_DIR");
     EXPECT(access(marker, F_OK) == 0);
     git_state_free(&state);
 
     t_path_restore(saved_path);
+    t_env_unset("HAX_TEST_RECORDING_GIT");
     free(marker);
 }
 
@@ -198,7 +242,15 @@ static void test_worktree_root_marker_symlink_is_not_followed(void)
 {
     char *root = t_tempdir();
     char *marker = xasprintf("%s/.git", root);
-    EXPECT(symlink("/nonexistent/hax-test-git-dir", marker) == 0);
+    int linked = t_symlink("/nonexistent/hax-test-git-dir", marker, 0) == 0;
+    int link_errno = errno;
+    if (!linked) {
+        free(marker);
+        if (link_errno == EPERM)
+            T_SKIP("symlink creation requires Developer Mode or symlink privilege");
+        FAIL("cannot create symlink: %s", strerror(link_errno));
+        return;
+    }
 
     char *found = git_find_worktree_root(root);
     EXPECT(found != NULL);
@@ -236,6 +288,9 @@ static void test_worktree_root_absent_outside_repository(void)
 
 int main(void)
 {
+    const char *marker = getenv("HAX_TEST_RECORDING_GIT");
+    if (marker)
+        return fs_write_atomic(marker, "", 0, 0) < 0;
     test_worktree_root_found_from_subdirectory();
     test_worktree_root_marker_may_be_a_file();
     test_worktree_root_marker_symlink_is_not_followed();

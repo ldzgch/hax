@@ -5,21 +5,24 @@
 
 #include "harness.h"
 #include "system/locale.h"
+#include "system/stream_capture.h"
 #include "terminal/ansi.h"
 #include "terminal/vt_resolve.h"
 
 /* Resolve `in` and return the settled rows. Caller frees. */
 static char *resolve_rows(const char *in)
 {
-    char *buf = NULL;
-    size_t len = 0;
-    FILE *mem = open_memstream(&buf, &len);
-    if (!mem) {
-        perror("open_memstream");
+    struct stream_capture mem_capture;
+    int mem_opened = stream_capture_open(&mem_capture);
+    FILE *mem = mem_capture.stream;
+    if (mem_opened < 0) {
+        perror("stream_capture_open");
         exit(1);
     }
     vt_resolve(in, strlen(in), mem);
-    fclose(mem);
+    size_t len = 0;
+    char *buf = stream_capture_finish(&mem_capture, &len);
+    EXPECT(buf != NULL);
     return buf;
 }
 

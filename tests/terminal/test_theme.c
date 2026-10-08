@@ -4,6 +4,7 @@
 
 #include "config.h"
 #include "diag.h"
+#include "env.h"
 #include "harness.h"
 #include "terminal/ansi.h"
 #include "terminal/theme.h"
@@ -225,55 +226,55 @@ static void test_tint_preview(void)
 
 static void test_no_color_autodetection(void)
 {
-    setenv("TERM", "xterm-256color", 1);
-    setenv("NO_COLOR", "1", 1);
+    t_env_set("TERM", "xterm-256color");
+    t_env_set("NO_COLOR", "1");
     EXPECT(theme_set("auto") == 0);
     EXPECT_STR_EQ(theme_name(), "off");
 
-    setenv("NO_COLOR", "", 1);
+    t_env_set("NO_COLOR", "");
     EXPECT(theme_set("auto") == 0);
     EXPECT(strcmp(theme_name(), "off") != 0);
-    unsetenv("NO_COLOR");
+    t_env_unset("NO_COLOR");
 }
 
 static void test_terminal_capability_autodetection(void)
 {
-    unsetenv("NO_COLOR");
-    unsetenv("COLORFGBG");
-    setenv("TERM", "dumb", 1);
+    t_env_unset("NO_COLOR");
+    t_env_unset("COLORFGBG");
+    t_env_set("TERM", "dumb");
     EXPECT(theme_set("auto") == 0);
     EXPECT_STR_EQ(theme_name(), "off");
 
-    setenv("TERM", "vt100", 1);
-    unsetenv("COLORTERM");
+    t_env_set("TERM", "vt100");
+    t_env_unset("COLORTERM");
     EXPECT(theme_set("auto") == 0);
     EXPECT_STR_EQ(theme_name(), "ansi");
 
-    setenv("COLORTERM", "truecolor", 1);
+    t_env_set("COLORTERM", "truecolor");
     EXPECT(theme_set("auto") == 0);
     EXPECT_STR_EQ(theme_name(), "dark");
-    unsetenv("COLORTERM");
+    t_env_unset("COLORTERM");
 }
 
 static void test_background_autodetection(void)
 {
-    unsetenv("NO_COLOR");
-    unsetenv("COLORTERM");
-    setenv("TERM", "xterm-256color", 1);
-    unsetenv("COLORFGBG");
+    t_env_unset("NO_COLOR");
+    t_env_unset("COLORTERM");
+    t_env_set("TERM", "xterm-256color");
+    t_env_unset("COLORFGBG");
     EXPECT(theme_set("auto") == 0);
     EXPECT_STR_EQ(theme_name(), "dark");
 
-    setenv("COLORFGBG", "0;15", 1);
+    t_env_set("COLORFGBG", "0;15");
     EXPECT(theme_set("auto") == 0);
     EXPECT_STR_EQ(theme_name(), "light");
-    setenv("COLORFGBG", "15;0", 1);
+    t_env_set("COLORFGBG", "15;0");
     EXPECT(theme_set("auto") == 0);
     EXPECT_STR_EQ(theme_name(), "dark");
-    setenv("COLORFGBG", "12;default;7", 1);
+    t_env_set("COLORFGBG", "12;default;7");
     EXPECT(theme_set("auto") == 0);
     EXPECT_STR_EQ(theme_name(), "light");
-    unsetenv("COLORFGBG");
+    t_env_unset("COLORFGBG");
 }
 
 /* Config resolution reads the environment tier, so these keys must not leak in from the caller. */
@@ -282,8 +283,8 @@ static void clear_theme_env(void)
     const char *vars[] = {"HAX_THEME", "HAX_TINT",  "HAX_PRESET",
                           "NO_COLOR",  "COLORTERM", "COLORFGBG"};
     for (size_t i = 0; i < sizeof(vars) / sizeof(vars[0]); i++)
-        unsetenv(vars[i]);
-    setenv("TERM", "xterm-256color", 1);
+        t_env_unset(vars[i]);
+    t_env_set("TERM", "xterm-256color");
 }
 
 static void test_config_resolution(void)
@@ -345,13 +346,13 @@ static void test_preset_tint_precedence(void)
     theme_init();
     EXPECT_STR_EQ(theme_tint_name(), "rose");
 
-    setenv("HAX_TINT", "sage", 1);
+    t_env_set("HAX_TINT", "sage");
     theme_init();
     EXPECT_STR_EQ(theme_tint_name(), "rose");
     config_set_override("preset", "plain");
     theme_init();
     EXPECT_STR_EQ(theme_tint_name(), "sage");
-    unsetenv("HAX_TINT");
+    t_env_unset("HAX_TINT");
 
     /* Presets do not write the tint key, so an explicit runtime tint survives preset exit. */
     config_set_override("preset", "review");

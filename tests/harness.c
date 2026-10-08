@@ -11,9 +11,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-int t_failures;
-int t_skips;
-
 /* Ownership is per pid: a forked child that never calls t_tempdir() must not remove its parent's
  * dirs, and one that does removes only entries from t_tmpdir_first on, since an ancestor created
  * (and removes) the ones before. */
@@ -110,44 +107,4 @@ char *t_tempdir(void)
     t_tmpdirs = grown;
     t_tmpdirs[t_n_tmpdirs++] = real;
     return real;
-}
-
-char *t_path_replace(const char *value)
-{
-    const char *current = getenv("PATH");
-    char *saved = NULL;
-    if (current) {
-        saved = strdup(current);
-        if (!saved)
-            abort();
-    }
-    if (value)
-        setenv("PATH", value, 1);
-    else
-        unsetenv("PATH");
-    return saved;
-}
-
-char *t_path_prepend(const char *dir)
-{
-    const char *current = getenv("PATH");
-    if (!current || !*current)
-        return t_path_replace(dir);
-    size_t len = strlen(dir) + 1 + strlen(current) + 1;
-    char *combined = malloc(len);
-    if (!combined)
-        abort();
-    snprintf(combined, len, "%s:%s", dir, current);
-    char *saved = t_path_replace(combined);
-    free(combined);
-    return saved;
-}
-
-void t_path_restore(char *saved)
-{
-    if (saved)
-        setenv("PATH", saved, 1);
-    else
-        unsetenv("PATH");
-    free(saved);
 }

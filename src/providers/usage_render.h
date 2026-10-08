@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <time.h>
 
+#include "format_attr.h"
+
 /* Shared rendering for /usage reports, so every provider's report aligns the same way. */
 
 /* Label column width shared by window and value rows. */
@@ -28,7 +30,7 @@ void usage_window_print(const struct usage_window *window);
 
 /* Print one indented row on stdout: `label` in the window label column, then the formatted value.
  * The value is printed as given; strip server text before formatting it in. */
-__attribute__((format(printf, 2, 3))) void usage_value_print(const char *label, const char *fmt,
-                                                             ...);
+__attribute__((format(HAX_PRINTF_FORMAT, 2, 3))) void usage_value_print(const char *label,
+                                                                        const char *fmt, ...);
 
 #endif /* HAX_PROVIDERS_USAGE_RENDER_H */

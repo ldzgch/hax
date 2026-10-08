@@ -1,18 +1,36 @@
 /* SPDX-License-Identifier: MIT */
 #include "system/rand.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#include <bcrypt.h>
+#include <limits.h>
+#else
 #include <errno.h>
 #include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "diag.h"
 
 void random_bytes(void *out, size_t len)
 {
+#ifdef _WIN32
+    unsigned char *next = out;
+    while (len) {
+        ULONG count = len > ULONG_MAX ? ULONG_MAX : (ULONG)len;
+        if (BCryptGenRandom(NULL, next, count, BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) {
+            hax_err("Windows random number generator failed");
+            abort();
+        }
+        next += count;
+        len -= count;
+    }
+#else
     int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         hax_err("open /dev/urandom: %s", strerror(errno));
@@ -35,6 +53,7 @@ void random_bytes(void *out, size_t len)
         bytes_read += (size_t)count;
     }
     close(fd);
+#endif
 }
 
 void gen_uuid_v4(char out[37])

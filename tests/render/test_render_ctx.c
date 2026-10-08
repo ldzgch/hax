@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "harness.h"
+#include "stream_capture.h"
 #include "render/disp.h"
 #include "render/markdown.h"
 #include "render/render_ctx.h"
@@ -12,14 +13,13 @@
 struct fixture {
     struct render_ctx render;
     FILE *stream;
-    char *bytes;
-    size_t len;
+    struct t_stream_capture capture;
 };
 
 static int fixture_init(struct fixture *fixture)
 {
     memset(fixture, 0, sizeof(*fixture));
-    fixture->stream = open_memstream(&fixture->bytes, &fixture->len);
+    fixture->stream = t_stream_capture_open(&fixture->capture);
     EXPECT(fixture->stream != NULL);
     if (!fixture->stream)
         return 0;
@@ -31,7 +31,7 @@ static int fixture_init(struct fixture *fixture)
 static const char *fixture_output(struct fixture *fixture)
 {
     disp_flush(&fixture->render.disp);
-    return fixture->bytes ? fixture->bytes : "";
+    return t_stream_capture_read(&fixture->capture);
 }
 
 static void emit_markdown(const char *bytes, size_t len, int is_raw, void *user)
@@ -51,8 +51,7 @@ static void fixture_enable_markdown(struct fixture *fixture)
 static void fixture_destroy(struct fixture *fixture)
 {
     md_free(fixture->render.md);
-    fclose(fixture->stream);
-    free(fixture->bytes);
+    t_stream_capture_close(&fixture->capture);
 }
 
 static void test_text_delta_ignores_initial_line_endings(void)

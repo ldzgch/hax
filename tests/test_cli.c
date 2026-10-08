@@ -9,6 +9,8 @@
 
 #include "cli.h"
 #include "config.h"
+#include "env.h"
+#include "files.h"
 #include "harness.h"
 #include "provider.h"
 #include "session.h"
@@ -171,7 +173,7 @@ static void test_parse_version_prints_and_exits(void)
         fflush(stdout);
         int saved = dup(STDOUT_FILENO);
         EXPECT(saved >= 0);
-        FILE *tmp = tmpfile();
+        FILE *tmp = t_tmpfile();
         EXPECT(tmp != NULL);
         EXPECT(dup2(fileno(tmp), STDOUT_FILENO) >= 0);
 
@@ -198,7 +200,7 @@ static char *capture_help_output(void)
     fflush(stdout);
     int saved = dup(STDOUT_FILENO);
     EXPECT(saved >= 0);
-    FILE *tmp = tmpfile();
+    FILE *tmp = t_tmpfile();
     EXPECT(tmp != NULL);
     EXPECT(dup2(fileno(tmp), STDOUT_FILENO) >= 0);
 
@@ -240,7 +242,7 @@ static void expect_help_rows_fit(const char *out, size_t max_cells)
 
 static void test_help_wraps_to_display_width(void)
 {
-    setenv("HAX_DISPLAY_WIDTH", "60", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "60");
     char *out = capture_help_output();
     EXPECT(strstr(out, "usage:") != NULL);
     EXPECT(strstr(out, "--resume[=ID]") != NULL);
@@ -249,9 +251,9 @@ static void test_help_wraps_to_display_width(void)
     free(out);
 
     /* Narrow widths drop the flag column and stack descriptions under their flags. */
-    setenv("HAX_DISPLAY_WIDTH", "30", 1);
+    t_env_set("HAX_DISPLAY_WIDTH", "30");
     out = capture_help_output();
-    unsetenv("HAX_DISPLAY_WIDTH");
+    t_env_unset("HAX_DISPLAY_WIDTH");
     expect_help_rows_fit(out, 30);
     EXPECT(strstr(out, "barebones chat") != NULL);
     free(out);
@@ -259,7 +261,7 @@ static void test_help_wraps_to_display_width(void)
 
 static FILE *prompt_stream(const char *text)
 {
-    FILE *stream = tmpfile();
+    FILE *stream = t_tmpfile();
     EXPECT(stream != NULL);
     EXPECT(fwrite(text, 1, strlen(text), stream) == strlen(text));
     EXPECT(fseek(stream, 0, SEEK_SET) == 0);
@@ -321,8 +323,8 @@ static void test_read_prompt_promptless_resume_continues(void)
 
 static void test_resolve_missing_session(void)
 {
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
-    setenv("HAX_SESSION_RETENTION_DAYS", "0", 1);
+    t_env_set("XDG_STATE_HOME", t_tempdir());
+    t_env_set("HAX_SESSION_RETENTION_DAYS", "0");
 
     struct cli_options options = {.resume_mode = CLI_RESUME_LATEST, .one_shot = 1};
     char *resolved = NULL;
@@ -362,9 +364,9 @@ static char *create_session(char **id)
 
 static void test_resolve_session_by_latest_id_and_prefix(void)
 {
-    setenv("XDG_STATE_HOME", t_tempdir(), 1);
-    unsetenv("HAX_NO_SESSION");
-    setenv("HAX_SESSION_RETENTION_DAYS", "0", 1);
+    t_env_set("XDG_STATE_HOME", t_tempdir());
+    t_env_unset("HAX_NO_SESSION");
+    t_env_set("HAX_SESSION_RETENTION_DAYS", "0");
 
     char *first_id;
     char *first_path = create_session(&first_id);
@@ -381,8 +383,7 @@ static void test_resolve_session_by_latest_id_and_prefix(void)
     /* Back-date the first session rather than trusting two rapid writes to land on distinct
      * timestamps: OpenBSD stamps both with the same mtime, which leaves "latest" undefined and
      * tests the filesystem's clock resolution instead of the resolution logic. */
-    struct timespec stamps[2] = {{.tv_nsec = UTIME_OMIT}, {.tv_sec = time(NULL) - 60}};
-    EXPECT(utimensat(AT_FDCWD, first_path, stamps, 0) == 0);
+    EXPECT(t_file_set_mtime(first_path, (int64_t)time(NULL) - 60) == 0);
 
     struct cli_options options = {.resume_mode = CLI_RESUME_LATEST, .one_shot = 1};
     char *resolved = NULL;
@@ -415,21 +416,21 @@ static void test_subagent_depth_validation(void)
     const char *original = getenv("HAX_SUBAGENT_DEPTH");
     char *saved = original ? strdup(original) : NULL;
 
-    unsetenv("HAX_SUBAGENT_DEPTH");
+    t_env_unset("HAX_SUBAGENT_DEPTH");
     EXPECT(cli_check_subagent_depth() == 0);
-    setenv("HAX_SUBAGENT_DEPTH", "2", 1);
+    t_env_set("HAX_SUBAGENT_DEPTH", "2");
     EXPECT(cli_check_subagent_depth() == 0);
-    setenv("HAX_SUBAGENT_DEPTH", "3", 1);
+    t_env_set("HAX_SUBAGENT_DEPTH", "3");
     EXPECT(cli_check_subagent_depth() == -1);
-    setenv("HAX_SUBAGENT_DEPTH", "invalid", 1);
+    t_env_set("HAX_SUBAGENT_DEPTH", "invalid");
     EXPECT(cli_check_subagent_depth() == -1);
-    setenv("HAX_SUBAGENT_DEPTH", "-1", 1);
+    t_env_set("HAX_SUBAGENT_DEPTH", "-1");
     EXPECT(cli_check_subagent_depth() == -1);
 
     if (saved)
-        setenv("HAX_SUBAGENT_DEPTH", saved, 1);
+        t_env_set("HAX_SUBAGENT_DEPTH", saved);
     else
-        unsetenv("HAX_SUBAGENT_DEPTH");
+        t_env_unset("HAX_SUBAGENT_DEPTH");
     free(saved);
 }
 

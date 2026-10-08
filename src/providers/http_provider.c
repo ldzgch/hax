@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "providers/http_provider.h"
 
-#include <fnmatch.h>
 #include <jansson.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +21,7 @@
 #include "providers/registry.h"
 #include "providers/stream_retry.h"
 #include "providers/wire.h"
+#include "text/glob.h"
 #include "text/placeholder.h"
 #include "text/url.h"
 #include "transport/http.h"
@@ -303,7 +303,7 @@ static char *stream_auth_error_message(void *ctx, long http_status, const char *
 static const struct wire *resolve_model_wire(struct http_provider *provider, const char *model)
 {
     for (size_t i = 0; i < provider->n_wire_rules; i++)
-        if (fnmatch(provider->wire_rules[i].pattern, model, 0) == 0)
+        if (glob_match(provider->wire_rules[i].pattern, model))
             return provider->wire_rules[i].wire;
 
     if (provider->catalog_wires) {

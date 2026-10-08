@@ -3,29 +3,24 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <libgen.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <termios.h>
 #include <unistd.h>
-#include <sys/ioctl.h>
 #include <sys/stat.h>
-/* The wait macros are provided by <sys/wait.h> per POSIX; glibc also leaks
- * them through <stdlib.h>, so the include cleaner cannot attribute them. */
-#include <sys/wait.h> // IWYU pragma: keep
 
 #include "buf.h"
 #include "xalloc.h"
 #include "system/fd.h"
 #include "system/fs.h"
 #include "system/locale.h"
+#include "system/path.h"
 #include "system/spawn.h"
 #include "terminal/ansi.h"
 #include "terminal/input_core.h"
 #include "terminal/theme.h"
+#include "terminal/tty.h"
 #include "terminal/ui.h"
 #include "terminal/width.h"
 #include "text/display_safe.h"
@@ -37,16 +32,9 @@
 
 static void terminal_size(int *columns, int *rows)
 {
-    struct winsize size;
-
     *columns = 0;
     *rows = 0;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0)
-        return;
-    if (size.ws_col > 0)
-        *columns = size.ws_col;
-    if (size.ws_row > 0)
-        *rows = size.ws_row;
+    (void)tty_size(columns, rows);
 }
 
 static int editor_columns(int terminal_columns)
@@ -83,17 +71,8 @@ static void enable_raw_mode(struct input *in)
         return;
     if (!isatty(STDIN_FILENO))
         return;
-    if (tcgetattr(STDIN_FILENO, &in->saved_termios) < 0)
-        return;
-
-    struct termios raw = in->saved_termios;
-    raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
-    raw.c_iflag &= ~(IXON | ICRNL | INPCK | ISTRIP | BRKINT);
-    raw.c_oflag &= ~OPOST;
-    raw.c_cflag |= CS8;
-    raw.c_cc[VMIN] = 1;
-    raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSADRAIN, &raw) < 0)
+    in->terminal_mode = tty_raw_enter(0);
+    if (!in->terminal_mode)
         return;
 
     fputs(ANSI_BRACKETED_PASTE_ENABLE, stdout);
@@ -107,7 +86,8 @@ static void disable_raw_mode(struct input *in)
         return;
     fputs(ANSI_BRACKETED_PASTE_DISABLE, stdout);
     fflush(stdout);
-    tcsetattr(STDIN_FILENO, TCSADRAIN, &in->saved_termios);
+    tty_raw_leave(in->terminal_mode);
+    in->terminal_mode = NULL;
     in->raw_active = 0;
 }
 
@@ -115,29 +95,12 @@ static void disable_raw_mode(struct input *in)
 
 static int read_byte_blocking(unsigned char *out)
 {
-    for (;;) {
-        ssize_t n = read(STDIN_FILENO, out, 1);
-        if (n == 1)
-            return 1;
-        if (n == 0)
-            return 0; /* EOF */
-        if (errno == EINTR)
-            continue;
-        return -1;
-    }
+    return tty_read_byte(out, -1);
 }
 
 static int read_byte_timeout(unsigned char *out, int timeout_ms)
 {
-    struct pollfd input = {.fd = STDIN_FILENO, .events = POLLIN};
-    int result;
-
-    do {
-        result = poll(&input, 1, timeout_ms);
-    } while (result < 0 && errno == EINTR);
-    if (result <= 0)
-        return result;
-    return read_byte_blocking(out);
+    return tty_read_byte(out, timeout_ms);
 }
 
 /* ---------------- bracketed paste ---------------- */
@@ -705,7 +668,7 @@ static void open_editor(struct input *in)
     int status = spawn_shell_wait(cmd);
     free(cmd);
 
-    int aborted = status < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0;
+    int aborted = !spawn_status_success(status);
 
     size_t n = 0;
     char *content = aborted ? NULL : fs_read_file(path, &n);
@@ -1100,64 +1063,28 @@ static void history_file_append(const char *path, const char *line)
         return;
     }
 
-    /* O_NONBLOCK makes opening a planted FIFO safe; fstat closes the replacement race. */
-    int fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NONBLOCK, 0600);
-    struct stat status;
-    if (fd < 0 || fstat(fd, &status) < 0 || !S_ISREG(status.st_mode)) {
-        if (fd >= 0)
-            close(fd);
-        free(enc);
-        return;
-    }
-
     char *rec = xmalloc(n + 1);
     memcpy(rec, enc, n);
     rec[n] = '\n';
-    ssize_t w;
-    do {
-        w = write(fd, rec, n + 1);
-    } while (w < 0 && errno == EINTR);
+    (void)fs_append_private(path, rec, n + 1);
     free(rec);
     free(enc);
-    close(fd);
 }
 
 /* A sibling temporary file prevents partial reads. Concurrent appends during rename may be
  * lost; compaction runs only at startup after the bloat threshold. */
 static void history_file_rewrite(struct input *in, const char *path)
 {
-    char *dup = xstrdup(path);
-    char *tmp = xasprintf("%s/.hax-hist.XXXXXX", dirname(dup));
-    int fd = mkstemp(tmp);
-    if (fd < 0) {
-        free(tmp);
-        free(dup);
-        return;
-    }
-    (void)fchmod(fd, 0600);
-    FILE *f = fdopen(fd, "w");
-    if (!f) {
-        close(fd);
-        unlink(tmp);
-        free(tmp);
-        free(dup);
-        return;
-    }
+    struct buf records;
+    buf_init(&records);
     for (size_t i = 0; i < in->hist_n; i++) {
         char *enc = input_core_history_encode(in->hist[i]);
-        fputs(enc, f);
-        fputc('\n', f);
+        buf_append_str(&records, enc);
+        buf_append_str(&records, "\n");
         free(enc);
     }
-    int ok = (fflush(f) == 0);
-    if (fclose(f) != 0)
-        ok = 0;
-    if (ok && rename(tmp, path) != 0)
-        ok = 0;
-    if (!ok)
-        unlink(tmp);
-    free(tmp);
-    free(dup);
+    (void)fs_write_atomic(path, records.data ? records.data : "", records.len, 0);
+    buf_free(&records);
 }
 
 /* Return records seen, including entries later evicted from the in-memory cap. */
@@ -1214,7 +1141,8 @@ void input_history_open(struct input *in, const char *path)
     if (!path || !*path)
         return;
     char *dup = xstrdup(path);
-    fs_mkdir_p(dirname(dup));
+    if (path_climb_to_parent(dup))
+        fs_mkdir_p(dup);
     free(dup);
 
     size_t loaded = history_file_load(in, path);
@@ -1471,6 +1399,7 @@ char *input_readline(struct input *in, const char *prompt)
         case 0x17: /* Ctrl-W */
             input_core_kill_word_back(in);
             break;
+#ifndef _WIN32
         case 0x1a: /* Ctrl-Z; raw mode disables the tty's ISIG handling. */
             leave_edit_area(in);
             disable_raw_mode(in);
@@ -1478,6 +1407,7 @@ char *input_readline(struct input *in, const char *prompt)
             enable_raw_mode(in);
             refresh_terminal_size(in);
             break;
+#endif
         case 0x1b: /* ESC — start of escape sequence */
             handle_escape_sequence(in);
             break;

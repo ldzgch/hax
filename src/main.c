@@ -20,6 +20,7 @@
 #include "providers/registry.h"
 #include "system/locale.h"
 #include "terminal/theme.h"
+#include "terminal/tty.h"
 #include "transport/ca.h"
 
 static struct provider *select_initial_provider(int one_shot, int *autoselected)
@@ -147,6 +148,7 @@ static int apply_run_selection(const struct cli_options *options)
 
 static void initialize_config(void)
 {
+    tty_init();
     locale_init_utf8();
 
     /* Config-load diagnostics can honor terminal color, but not a theme in an unreadable file. */

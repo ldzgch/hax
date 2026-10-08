@@ -285,7 +285,9 @@ static void test_post_empty_body_is_null(void)
 
 int main(void)
 {
+#ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
+#endif
     test_get_response();
     test_get_offers_compression();
     test_json_post();

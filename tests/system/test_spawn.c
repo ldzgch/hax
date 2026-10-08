@@ -9,6 +9,7 @@
  * them through <stdlib.h>, so the include cleaner cannot attribute them. */
 #include <sys/wait.h> // IWYU pragma: keep
 
+#include "env.h"
 #include "harness.h"
 #include "xalloc.h"
 #include "system/locale.h"
@@ -410,8 +411,8 @@ static void test_fork_child_starts_with_default_handlers(void)
 
 static void test_force_utf8_leaves_a_capable_environment_alone(void)
 {
-    unsetenv("LC_ALL");
-    setenv("LC_CTYPE", "C", 1);
+    t_env_unset("LC_ALL");
+    t_env_set("LC_CTYPE", "C");
     locale_init_utf8();
     if (!locale_have_utf8())
         T_SKIP("no UTF-8 locale to switch to");
@@ -424,7 +425,7 @@ static void test_force_utf8_leaves_a_capable_environment_alone(void)
 /* A pinned LC_ALL outranks the published LC_CTYPE, leaving the command itself to carry one. */
 static void test_force_utf8_overrides_a_pinned_lc_all(void)
 {
-    setenv("LC_ALL", "C", 1);
+    t_env_set("LC_ALL", "C");
     locale_init_utf8();
     if (!locale_have_utf8())
         T_SKIP("no UTF-8 locale to switch to");
@@ -476,8 +477,8 @@ static void expect_child_locale(const char *command)
 
 static void test_force_utf8_reaches_the_child(void)
 {
-    setenv("LANG", "de_DE.UTF-8", 1);
-    setenv("LC_ALL", "C", 1);
+    t_env_set("LANG", "de_DE.UTF-8");
+    t_env_set("LC_ALL", "C");
     locale_init_utf8();
 
     expect_child_locale(LOCALE_PROBE);
@@ -487,8 +488,8 @@ static void test_force_utf8_reaches_the_child(void)
  * override has to survive command shapes other than a simple command. */
 static void test_force_utf8_accepts_a_compound_command(void)
 {
-    setenv("LANG", "de_DE.UTF-8", 1);
-    setenv("LC_ALL", "C", 1);
+    t_env_set("LANG", "de_DE.UTF-8");
+    t_env_set("LC_ALL", "C");
     locale_init_utf8();
 
     expect_child_locale("{ " LOCALE_PROBE "; } | cat");

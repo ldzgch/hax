@@ -10,6 +10,7 @@
 
 #include "buf.h"
 #include "config.h"
+#include "env.h"
 #include "harness.h"
 #include "tool.h"
 #include "xalloc.h"
@@ -100,7 +101,12 @@ static void test_bash_exit_code(void)
 static void test_bash_signal(void)
 {
     char *out = call_bash("kill -TERM $$");
+#ifdef _WIN32
+    /* Git Bash exposes its wait status as the native process exit code. */
+    EXPECT(strstr(out, "[exit 3840]") != NULL);
+#else
     EXPECT(strstr(out, "[signal 15]") != NULL);
+#endif
     free(out);
 }
 
@@ -158,14 +164,17 @@ static void test_bash_foreground_infinite_writer_caps(void)
     EXPECT(elapsed < 3);
     EXPECT(strstr(out, "[output truncated") != NULL);
     EXPECT(strstr(out, "saved to") != NULL);
-    /* We SIGKILL the pgroup, so the shell dies by signal. */
+#ifdef _WIN32
+    EXPECT(strstr(out, "[exit 1]") != NULL);
+#else
     EXPECT(strstr(out, "[signal 9]") != NULL);
+#endif
     free(out);
 }
 
 static void test_bash_timeout_kills_process_tree(void)
 {
-    setenv("HAX_BASH_TIMEOUT", "30ms", 1);
+    t_env_set("HAX_BASH_TIMEOUT", "30ms");
     time_t t0 = time(NULL);
     char *out = call_bash("sleep 30");
     time_t elapsed = time(NULL) - t0;
@@ -174,58 +183,61 @@ static void test_bash_timeout_kills_process_tree(void)
     /* No bare [signal N] — the timeout supersedes it. */
     EXPECT(strstr(out, "[signal ") == NULL);
     free(out);
-    unsetenv("HAX_BASH_TIMEOUT");
+    t_env_unset("HAX_BASH_TIMEOUT");
 }
 
 static void test_bash_per_call_timeout_overrides_env(void)
 {
-    setenv("HAX_BASH_TIMEOUT", "10ms", 1);
+    t_env_set("HAX_BASH_TIMEOUT", "10ms");
     char *out = TOOL_BASH.run("{\"command\":\"sleep 0.05\",\"timeout_seconds\":60}", NULL);
     EXPECT(strstr(out, "[timed out") == NULL);
     free(out);
-    unsetenv("HAX_BASH_TIMEOUT");
+    t_env_unset("HAX_BASH_TIMEOUT");
 }
 
 static void test_bash_per_call_timeout_clamped_to_max(void)
 {
-    setenv("HAX_BASH_TIMEOUT_MAX", "30ms", 1);
+    t_env_set("HAX_BASH_TIMEOUT_MAX", "30ms");
     time_t t0 = time(NULL);
     char *out = TOOL_BASH.run("{\"command\":\"sleep 30\",\"timeout_seconds\":9999}", NULL);
     time_t elapsed = time(NULL) - t0;
     EXPECT(elapsed < 2);
     EXPECT(strstr(out, "[timed out after 30ms]") != NULL);
     free(out);
-    unsetenv("HAX_BASH_TIMEOUT_MAX");
+    t_env_unset("HAX_BASH_TIMEOUT_MAX");
 }
 
 static void test_bash_timeout_graceful_sigterm(void)
 {
-    setenv("HAX_BASH_TIMEOUT", "30ms", 1);
+    t_env_set("HAX_BASH_TIMEOUT", "30ms");
     time_t t0 = time(NULL);
     char *out = call_bash("sleep 30");
     time_t elapsed = time(NULL) - t0;
     EXPECT(elapsed < 2);
     EXPECT(strstr(out, "[timed out after 30ms]") != NULL);
     free(out);
-    unsetenv("HAX_BASH_TIMEOUT");
+    t_env_unset("HAX_BASH_TIMEOUT");
 }
 
 static void test_bash_timeout_escalates_to_sigkill(void)
 {
-    setenv("HAX_BASH_TIMEOUT", "30ms", 1);
-    setenv("HAX_BASH_TIMEOUT_GRACE", "30ms", 1);
+    t_env_set("HAX_BASH_TIMEOUT", "30ms");
+    t_env_set("HAX_BASH_TIMEOUT_GRACE", "30ms");
     time_t t0 = time(NULL);
     char *out = call_bash("trap '' TERM; while :; do :; done");
     time_t elapsed = time(NULL) - t0;
     EXPECT(elapsed < 2);
     EXPECT(strstr(out, "[timed out after 30ms]") != NULL);
     free(out);
-    unsetenv("HAX_BASH_TIMEOUT");
-    unsetenv("HAX_BASH_TIMEOUT_GRACE");
+    t_env_unset("HAX_BASH_TIMEOUT");
+    t_env_unset("HAX_BASH_TIMEOUT_GRACE");
 }
 
 static void test_bash_timeout_grace_allows_cleanup(void)
 {
+#ifdef _WIN32
+    T_SKIP("native Windows jobs terminate immediately without a TERM grace window");
+#endif
 #if (defined(T_ASAN) || defined(T_TSAN)) && defined(__APPLE__)
     /* Reproducible with a sanitized parent and a plain pipe alone, no hax code involved. */
     T_SKIP("bash sporadically drops its TERM trap when spawned from a sanitized macOS parent");
@@ -236,46 +248,46 @@ static void test_bash_timeout_grace_allows_cleanup(void)
      * TERM-proof sleep the shell then defers the trap to for its full length. The trap's exit ends
      * the run at pipe EOF, so the grace never elapses on the happy path; it only needs to outlast
      * the trap's pause. */
-    setenv("HAX_BASH_TIMEOUT", "50ms", 1);
-    setenv("HAX_BASH_TIMEOUT_GRACE", "500ms", 1);
-    setenv("HAX_BASH_TRANSITION_MIN_BYTES", "6", 1); /* "armed\n" */
+    t_env_set("HAX_BASH_TIMEOUT", "50ms");
+    t_env_set("HAX_BASH_TIMEOUT_GRACE", "500ms");
+    t_env_set("HAX_BASH_TRANSITION_MIN_BYTES", "6"); /* "armed\n" */
     char *out =
         call_bash("trap 'sleep 0.05; echo cleaned; exit' TERM; sh -c 'echo armed; exec sleep 30'");
     EXPECT(strstr(out, "cleaned") != NULL);
     EXPECT(strstr(out, "[timed out") != NULL);
     free(out);
-    unsetenv("HAX_BASH_TRANSITION_MIN_BYTES");
-    unsetenv("HAX_BASH_TIMEOUT");
-    unsetenv("HAX_BASH_TIMEOUT_GRACE");
+    t_env_unset("HAX_BASH_TRANSITION_MIN_BYTES");
+    t_env_unset("HAX_BASH_TIMEOUT");
+    t_env_unset("HAX_BASH_TIMEOUT_GRACE");
 }
 
 static void test_bash_timeout_grace_disabled(void)
 {
-    setenv("HAX_BASH_TIMEOUT", "30ms", 1);
-    setenv("HAX_BASH_TIMEOUT_GRACE", "0", 1);
+    t_env_set("HAX_BASH_TIMEOUT", "30ms");
+    t_env_set("HAX_BASH_TIMEOUT_GRACE", "0");
     time_t t0 = time(NULL);
     char *out = call_bash("trap '' TERM; while :; do :; done");
     time_t elapsed = time(NULL) - t0;
     EXPECT(elapsed < 2);
     EXPECT(strstr(out, "[timed out after 30ms]") != NULL);
     free(out);
-    unsetenv("HAX_BASH_TIMEOUT");
-    unsetenv("HAX_BASH_TIMEOUT_GRACE");
+    t_env_unset("HAX_BASH_TIMEOUT");
+    t_env_unset("HAX_BASH_TIMEOUT_GRACE");
 }
 
 static void test_bash_timeout_no_grace_short_timeout(void)
 {
     /* A direct SIGKILL must work even if the parent signals before the child completes setsid(). */
-    setenv("HAX_BASH_TIMEOUT", "1ms", 1);
-    setenv("HAX_BASH_TIMEOUT_GRACE", "0", 1);
+    t_env_set("HAX_BASH_TIMEOUT", "1ms");
+    t_env_set("HAX_BASH_TIMEOUT_GRACE", "0");
     time_t t0 = time(NULL);
     char *out = call_bash("sleep 30");
     time_t elapsed = time(NULL) - t0;
     EXPECT(elapsed < 2);
     EXPECT(strstr(out, "[timed out after 1ms]") != NULL);
     free(out);
-    unsetenv("HAX_BASH_TIMEOUT");
-    unsetenv("HAX_BASH_TIMEOUT_GRACE");
+    t_env_unset("HAX_BASH_TIMEOUT");
+    t_env_unset("HAX_BASH_TIMEOUT_GRACE");
 }
 
 static void test_bash_timeout_grace_no_escape_via_pipe_close(void)
@@ -283,14 +295,11 @@ static void test_bash_timeout_grace_no_escape_via_pipe_close(void)
     /* The descendant closes the output pipe during its TERM handler; its recorded process group
      * must still be gone when the grace period expires. "armed" prints only after the pgid write
      * and the trap, so holding the timeout on it orders SIGTERM after both. */
-    setenv("HAX_BASH_TIMEOUT", "80ms", 1);
-    setenv("HAX_BASH_TIMEOUT_GRACE", "20ms", 1);
-    setenv("HAX_BASH_TRANSITION_MIN_BYTES", "6", 1); /* "armed\n" */
+    t_env_set("HAX_BASH_TIMEOUT", "80ms");
+    t_env_set("HAX_BASH_TIMEOUT_GRACE", "20ms");
+    t_env_set("HAX_BASH_TRANSITION_MIN_BYTES", "6"); /* "armed\n" */
 
-    char path[] = "/tmp/hax-test-pgid-XXXXXX";
-    int fd = mkstemp(path);
-    EXPECT(fd >= 0);
-    close(fd);
+    char *path = xasprintf("%s/pid", t_tempdir());
 
     char *cmd = xasprintf("(echo $$ > %s; "
                           "trap 'exec >/dev/null 2>&1; while :; do :; done' TERM; "
@@ -310,9 +319,12 @@ static void test_bash_timeout_grace_no_escape_via_pipe_close(void)
             pgid = -1;
         fclose(f);
     }
-    unlink(path);
+    free(path);
     EXPECT(pgid > 0);
 
+#ifdef _WIN32
+    EXPECT(process_is_gone(pgid));
+#else
     /* ESRCH on Linux or EPERM on Darwin means the group is gone; clean up before failing. The
      * killed group lingers as an unreaped zombie until init collects it, which a loaded machine may
      * delay well past the kill itself. */
@@ -329,19 +341,18 @@ static void test_bash_timeout_grace_no_escape_via_pipe_close(void)
         kill(-pgid, SIGKILL);
     EXPECT(!alive);
 
-    unsetenv("HAX_BASH_TRANSITION_MIN_BYTES");
-    unsetenv("HAX_BASH_TIMEOUT");
-    unsetenv("HAX_BASH_TIMEOUT_GRACE");
+#endif
+
+    t_env_unset("HAX_BASH_TRANSITION_MIN_BYTES");
+    t_env_unset("HAX_BASH_TIMEOUT");
+    t_env_unset("HAX_BASH_TIMEOUT_GRACE");
 }
 
 static void test_bash_redirected_background_job_does_not_leak(void)
 {
     /* A redirected background process does not hold the output pipe open, so verify it is still
      * killed when the shell exits. */
-    char path[] = "/tmp/hax-test-bg-pid-XXXXXX";
-    int fd = mkstemp(path);
-    EXPECT(fd >= 0);
-    close(fd);
+    char *path = xasprintf("%s/pid", t_tempdir());
 
     char *cmd = xasprintf("nohup sleep 30 >/dev/null 2>&1 & echo $! > %s", path);
     char *args = xasprintf("{\"command\":\"%s\"}", cmd);
@@ -357,31 +368,19 @@ static void test_bash_redirected_background_job_does_not_leak(void)
             pid = -1;
         fclose(f);
     }
-    unlink(path);
+    free(path);
     EXPECT(pid > 0);
 
-    /* ESRCH on Linux or EPERM on Darwin means the process is gone. */
-    int alive = 1;
-    for (int i = 0; i < 20; i++) {
-        if (kill(pid, 0) < 0 && (errno == ESRCH || errno == EPERM)) {
-            alive = 0;
-            break;
-        }
-        struct timespec ts = {.tv_sec = 0, .tv_nsec = 5 * 1000000L};
-        nanosleep(&ts, NULL);
-    }
-    if (alive)
-        kill(pid, SIGKILL);
-    EXPECT(!alive);
+    EXPECT(process_is_gone(pid));
 }
 
 static void test_bash_timeout_huge_does_not_overflow(void)
 {
-    setenv("HAX_BASH_TIMEOUT", "9223372036854775000ms", 1);
+    t_env_set("HAX_BASH_TIMEOUT", "9223372036854775000ms");
     char *out = call_bash("echo hi");
     EXPECT_STR_EQ(out, "hi\n");
     free(out);
-    unsetenv("HAX_BASH_TIMEOUT");
+    t_env_unset("HAX_BASH_TIMEOUT");
 }
 
 static void test_bash_per_call_timeout_invalid(void)
@@ -524,14 +523,14 @@ static void test_bash_mkstemp_failure_falls_back_to_mem(void)
 {
     /* If the spill file cannot be created, preserve the in-memory prefix and report that the
      * remainder is unavailable. */
-    setenv("TMPDIR", "/no/such/hax-test-dir/", 1);
+    t_env_set("TMPDIR", "/no/such/hax-test-dir/");
     char *out = call_bash("seq 1 20000");
     EXPECT(strstr(out, "1\n") != NULL);
     EXPECT(strstr(out, "[output truncated") != NULL);
     EXPECT(strstr(out, "unavailable") != NULL);
     EXPECT(strstr(out, "saved to") == NULL);
     free(out);
-    unsetenv("TMPDIR");
+    t_env_unset("TMPDIR");
 }
 
 static void test_bash_tail_keeps_line_at_window_boundary(void)
@@ -559,11 +558,17 @@ static void test_bash_tail_keeps_line_at_window_boundary(void)
     free(out);
 }
 
-static void test_bash_invalid_utf8_tmpdir_falls_back(void)
+static void test_bash_spill_tmpdir_encoding(void)
 {
     /* An invalid UTF-8 TMPDIR cannot be advertised to the model; the spill must use a valid
      * fallback path. */
-    setenv("TMPDIR", "/tmp/hax-test-bad-\xff-XXXXXX-NOTREAL", 1);
+#ifdef _WIN32
+    char *tmpdir = xasprintf("%s/\xe6\x96\x87-\xf0\x9f\x90\xb1", t_tempdir());
+    EXPECT(fs_mkdir_p(tmpdir) == 0);
+    t_env_set("TMPDIR", tmpdir);
+#else
+    t_env_set("TMPDIR", "/tmp/hax-test-bad-\xff-XXXXXX-NOTREAL");
+#endif
     char *out = call_bash("seq 1 20000");
     EXPECT(strstr(out, "[output truncated") != NULL);
     /* No raw 0xff in the result — both the validator (rejecting the env) and utf8_sanitize (defense
@@ -583,16 +588,20 @@ static void test_bash_invalid_utf8_tmpdir_falls_back(void)
             if (len < sizeof(path)) {
                 memcpy(path, p, len);
                 path[len] = '\0';
+#ifndef _WIN32
                 EXPECT(strncmp(path, "/tmp/hax-", 9) == 0);
+#endif
                 EXPECT(strstr(path, "/bash-") != NULL);
-                struct stat st;
-                EXPECT(stat(path, &st) == 0);
+                EXPECT(fs_check_regular(path) == 0);
             }
         }
     }
     free(out);
     tempfiles_cleanup();
-    unsetenv("TMPDIR");
+    t_env_unset("TMPDIR");
+#ifdef _WIN32
+    free(tmpdir);
+#endif
 }
 
 static void test_bash_long_line_with_trailing_newline_keeps_body(void)
@@ -737,24 +746,24 @@ static void test_bash_env_overrides(void)
 {
     /* Contradicting parent values verify replacements; NO_COLOR, FORCE_COLOR, and MAKEFLAGS verify
      * passthrough. */
-    setenv("PAGER", "less", 1);
-    setenv("GIT_PAGER", "less", 1);
-    setenv("MANPAGER", "less", 1);
-    setenv("SYSTEMD_PAGER", "less", 1);
-    setenv("GH_PAGER", "less", 1);
-    setenv("GIT_EDITOR", "vim", 1);
-    setenv("GIT_SEQUENCE_EDITOR", "vim", 1);
-    setenv("VISUAL", "vim", 1);
-    setenv("EDITOR", "vim", 1);
-    setenv("TERM", "xterm-256color", 1);
-    setenv("NO_COLOR", "0", 1);
-    setenv("COLORTERM", "truecolor", 1);
-    setenv("AI_AGENT", "other", 1);
-    setenv("GIT_TERMINAL_PROMPT", "1", 1);
-    setenv("PYTHONUNBUFFERED", "0", 1);
-    setenv("TQDM_DISABLE", "0", 1);
-    setenv("FORCE_COLOR", "1", 1);
-    setenv("MAKEFLAGS", "-j8", 1);
+    t_env_set("PAGER", "less");
+    t_env_set("GIT_PAGER", "less");
+    t_env_set("MANPAGER", "less");
+    t_env_set("SYSTEMD_PAGER", "less");
+    t_env_set("GH_PAGER", "less");
+    t_env_set("GIT_EDITOR", "vim");
+    t_env_set("GIT_SEQUENCE_EDITOR", "vim");
+    t_env_set("VISUAL", "vim");
+    t_env_set("EDITOR", "vim");
+    t_env_set("TERM", "xterm-256color");
+    t_env_set("NO_COLOR", "0");
+    t_env_set("COLORTERM", "truecolor");
+    t_env_set("AI_AGENT", "other");
+    t_env_set("GIT_TERMINAL_PROMPT", "1");
+    t_env_set("PYTHONUNBUFFERED", "0");
+    t_env_set("TQDM_DISABLE", "0");
+    t_env_set("FORCE_COLOR", "1");
+    t_env_set("MAKEFLAGS", "-j8");
     char *out = call_bash("echo PAGER=$PAGER; echo GIT_PAGER=$GIT_PAGER; "
                           "echo MANPAGER=$MANPAGER; echo SYSTEMD_PAGER=$SYSTEMD_PAGER; "
                           "echo GH_PAGER=$GH_PAGER; "
@@ -785,24 +794,24 @@ static void test_bash_env_overrides(void)
                        "FORCE_COLOR=1\n"
                        "MAKEFLAGS=-j8\n");
     free(out);
-    unsetenv("PAGER");
-    unsetenv("GIT_PAGER");
-    unsetenv("MANPAGER");
-    unsetenv("SYSTEMD_PAGER");
-    unsetenv("GH_PAGER");
-    unsetenv("GIT_EDITOR");
-    unsetenv("GIT_SEQUENCE_EDITOR");
-    unsetenv("VISUAL");
-    unsetenv("EDITOR");
-    unsetenv("TERM");
-    unsetenv("NO_COLOR");
-    unsetenv("COLORTERM");
-    unsetenv("AI_AGENT");
-    unsetenv("GIT_TERMINAL_PROMPT");
-    unsetenv("PYTHONUNBUFFERED");
-    unsetenv("TQDM_DISABLE");
-    unsetenv("FORCE_COLOR");
-    unsetenv("MAKEFLAGS");
+    t_env_unset("PAGER");
+    t_env_unset("GIT_PAGER");
+    t_env_unset("MANPAGER");
+    t_env_unset("SYSTEMD_PAGER");
+    t_env_unset("GH_PAGER");
+    t_env_unset("GIT_EDITOR");
+    t_env_unset("GIT_SEQUENCE_EDITOR");
+    t_env_unset("VISUAL");
+    t_env_unset("EDITOR");
+    t_env_unset("TERM");
+    t_env_unset("NO_COLOR");
+    t_env_unset("COLORTERM");
+    t_env_unset("AI_AGENT");
+    t_env_unset("GIT_TERMINAL_PROMPT");
+    t_env_unset("PYTHONUNBUFFERED");
+    t_env_unset("TQDM_DISABLE");
+    t_env_unset("FORCE_COLOR");
+    t_env_unset("MAKEFLAGS");
 }
 
 static void test_bash_subagent_env(void)
@@ -813,12 +822,12 @@ static void test_bash_subagent_env(void)
     char depth_expect[32];
     snprintf(depth_expect, sizeof(depth_expect), "d=%d\n", (d ? atoi(d) : 0) + 1);
 
-    setenv("HAX_PROVIDER", "parent-provider", 1);
-    setenv("HAX_MODEL", "parent-model", 1);
-    setenv("HAX_EFFORT", "parent-effort", 1);
-    setenv("HAX_PRESET", "parent-preset", 1);
-    setenv("HAX_TRACE", "/tmp/parent.trace", 1);
-    setenv("HAX_TRANSCRIPT", "/tmp/parent.transcript", 1);
+    t_env_set("HAX_PROVIDER", "parent-provider");
+    t_env_set("HAX_MODEL", "parent-model");
+    t_env_set("HAX_EFFORT", "parent-effort");
+    t_env_set("HAX_PRESET", "parent-preset");
+    t_env_set("HAX_TRACE", "/tmp/parent.trace");
+    t_env_set("HAX_TRANSCRIPT", "/tmp/parent.transcript");
     bash_env_set_selection("mock", "m-1", NULL);
     char *out = call_bash("echo p=$HAX_PROVIDER; echo m=$HAX_MODEL; "
                           "echo e=$HAX_EFFORT; echo ps=$HAX_PRESET; "
@@ -840,42 +849,47 @@ static void test_bash_subagent_env(void)
     free(want);
     free(out);
 
-    unsetenv("HAX_PROVIDER");
-    unsetenv("HAX_MODEL");
-    unsetenv("HAX_EFFORT");
-    unsetenv("HAX_PRESET");
-    unsetenv("HAX_TRACE");
-    unsetenv("HAX_TRANSCRIPT");
+    t_env_unset("HAX_PROVIDER");
+    t_env_unset("HAX_MODEL");
+    t_env_unset("HAX_EFFORT");
+    t_env_unset("HAX_PRESET");
+    t_env_unset("HAX_TRACE");
+    t_env_unset("HAX_TRANSCRIPT");
 }
 
 static void test_bash_shell_prefers_bash(void)
 {
     /* Pin the built-in resolution chain so user configuration cannot affect the assertion. */
-    setenv("HAX_BASH_SHELL", CONFIG_VALUE_DEFAULT, 1);
+    t_env_set("HAX_BASH_SHELL", CONFIG_VALUE_DEFAULT);
     char *bash = fs_which("bash");
-    char *out = call_bash("echo $0");
+    char *out = call_bash("basename $0");
     EXPECT_STR_EQ(out, bash ? "bash\n" : "sh\n");
     free(out);
     free(bash);
-    unsetenv("HAX_BASH_SHELL");
+    t_env_unset("HAX_BASH_SHELL");
 }
 
 static void test_bash_shell_override(void)
 {
-    setenv("HAX_BASH_SHELL", "/bin/sh", 1);
-    char *out = call_bash("echo $0");
+    char *shell = fs_which("sh");
+    EXPECT(shell != NULL);
+    if (!shell)
+        return;
+    t_env_set("HAX_BASH_SHELL", shell);
+    free(shell);
+    char *out = call_bash("basename $0");
     EXPECT_STR_EQ(out, "sh\n");
     free(out);
-    unsetenv("HAX_BASH_SHELL");
+    t_env_unset("HAX_BASH_SHELL");
 }
 
 static void test_bash_shell_override_bad_value_falls_back(void)
 {
-    setenv("HAX_BASH_SHELL", "hax-definitely-not-a-shell", 1);
+    t_env_set("HAX_BASH_SHELL", "hax-definitely-not-a-shell");
     char *out = call_bash("echo still-works");
     EXPECT_STR_EQ(out, "still-works\n");
     free(out);
-    unsetenv("HAX_BASH_SHELL");
+    t_env_unset("HAX_BASH_SHELL");
 }
 
 static void test_bash_streamed_history_truncated(void)
@@ -898,10 +912,10 @@ static void test_bash_streamed_history_truncated(void)
 int main(void)
 {
     /* Pin the cap so inherited configuration cannot invalidate truncation fixtures. */
-    setenv("HAX_TOOL_OUTPUT_CAP", "50k", 1);
+    t_env_set("HAX_TOOL_OUTPUT_CAP", "50k");
     /* This suite covers the synchronous kill-on-timeout path; task detachment is covered by
      * tools/test_task.c. */
-    setenv("HAX_NO_TASKS", "1", 1);
+    t_env_set("HAX_NO_TASKS", "1");
 
     test_bash_interrupt_sets_provenance();
     test_bash_invalid_json();
@@ -952,7 +966,7 @@ int main(void)
     test_bash_unterminated_final_line_triggers_spill();
     test_bash_tail_keeps_line_at_window_boundary();
     test_bash_long_line_with_trailing_newline_keeps_body();
-    test_bash_invalid_utf8_tmpdir_falls_back();
+    test_bash_spill_tmpdir_encoding();
     test_bash_mkstemp_failure_falls_back_to_mem();
     test_bash_cleanup_unlinks_kept_files();
     test_bash_short_output_no_elision();

@@ -8,6 +8,7 @@
 
 #include "render/ctrl_strip.h"
 #include "render/progress.h"
+#include "system/clock.h"
 #include "terminal/ansi.h"
 #include "terminal/width.h"
 
@@ -18,7 +19,7 @@ static void format_reset_time(char *output, size_t output_size, time_t reset_at)
 {
     time_t now = time(NULL);
     struct tm reset_tm, now_tm;
-    if (!localtime_r(&reset_at, &reset_tm) || !localtime_r(&now, &now_tm)) {
+    if (clock_local(reset_at, &reset_tm) < 0 || clock_local(now, &now_tm) < 0) {
         snprintf(output, output_size, "?");
         return;
     }

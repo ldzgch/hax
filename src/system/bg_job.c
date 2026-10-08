@@ -2,7 +2,12 @@
 #include "system/bg_job.h"
 
 #include <assert.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <process.h>
+#else
 #include <pthread.h>
+#endif
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -11,24 +16,38 @@
 #include "xalloc.h"
 
 struct bg_job {
+#ifdef _WIN32
+    HANDLE thread;
+#else
     pthread_t thread;
+#endif
     bg_job_fn fn;
     void *arg;
     atomic_bool cancel_requested;
+#ifndef _WIN32
     pthread_mutex_t done_lock;
     pthread_cond_t done_cond;
     int done;
+#endif
 };
 
+#ifdef _WIN32
+static unsigned __stdcall run_job(void *arg)
+#else
 static void *run_job(void *arg)
+#endif
 {
     struct bg_job *job = arg;
     job->fn(job, job->arg);
+#ifdef _WIN32
+    return 0;
+#else
     pthread_mutex_lock(&job->done_lock);
     job->done = 1;
     pthread_cond_signal(&job->done_cond);
     pthread_mutex_unlock(&job->done_lock);
     return NULL;
+#endif
 }
 
 struct bg_job *bg_job_spawn(bg_job_fn fn, void *arg)
@@ -39,6 +58,14 @@ struct bg_job *bg_job_spawn(bg_job_fn fn, void *arg)
     job->fn = fn;
     job->arg = arg;
     atomic_init(&job->cancel_requested, false);
+#ifdef _WIN32
+    /* The CRT entry point initializes per-thread runtime state used by worker callbacks. */
+    job->thread = (HANDLE)_beginthreadex(NULL, 0, run_job, job, 0, NULL);
+    if (!job->thread) {
+        free(job);
+        return NULL;
+    }
+#else
     pthread_mutex_init(&job->done_lock, NULL);
     pthread_cond_init(&job->done_cond, NULL);
     if (pthread_create(&job->thread, NULL, run_job, job) != 0) {
@@ -47,6 +74,7 @@ struct bg_job *bg_job_spawn(bg_job_fn fn, void *arg)
         free(job);
         return NULL;
     }
+#endif
     return job;
 }
 
@@ -55,6 +83,10 @@ int bg_job_wait_ms(struct bg_job *job, long timeout_ms)
     if (!job)
         return 1;
 
+#ifdef _WIN32
+    DWORD timeout = timeout_ms > 0 ? (DWORD)timeout_ms : 0;
+    return WaitForSingleObject(job->thread, timeout) == WAIT_OBJECT_0;
+#else
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
     deadline.tv_sec += timeout_ms / 1000;
@@ -72,6 +104,7 @@ int bg_job_wait_ms(struct bg_job *job, long timeout_ms)
     int done = job->done;
     pthread_mutex_unlock(&job->done_lock);
     return done;
+#endif
 }
 
 void bg_job_cancel(struct bg_job *job)
@@ -94,8 +127,13 @@ void bg_job_join(struct bg_job *job)
 {
     if (!job)
         return;
+#ifdef _WIN32
+    WaitForSingleObject(job->thread, INFINITE);
+    CloseHandle(job->thread);
+#else
     pthread_join(job->thread, NULL);
     pthread_cond_destroy(&job->done_cond);
     pthread_mutex_destroy(&job->done_lock);
+#endif
     free(job);
 }

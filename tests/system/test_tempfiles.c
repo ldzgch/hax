@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "env.h"
 #include "harness.h"
 #include "system/tempfiles.h"
 
@@ -28,7 +29,7 @@ static char *parent_dir(const char *path)
 static void test_create_tracks_files_and_cleanup_removes_them(void)
 {
     char *tmpdir = t_tempdir();
-    setenv("TMPDIR", tmpdir, 1);
+    t_env_set("TMPDIR", tmpdir);
 
     char *plain_path = NULL;
     char *image_path = NULL;
@@ -62,13 +63,13 @@ static void test_create_tracks_files_and_cleanup_removes_them(void)
     free(image_dir);
     free(plain_path);
     free(image_path);
-    unsetenv("TMPDIR");
+    t_env_unset("TMPDIR");
 }
 
 static void test_untracked_file_survives_cleanup(void)
 {
     char *tmpdir = t_tempdir();
-    setenv("TMPDIR", tmpdir, 1);
+    t_env_set("TMPDIR", tmpdir);
 
     char *kept_path = NULL;
     char *removed_path = NULL;
@@ -89,7 +90,7 @@ static void test_untracked_file_survives_cleanup(void)
     tempfiles_cleanup();
     free(kept_path);
     free(removed_path);
-    unsetenv("TMPDIR");
+    t_env_unset("TMPDIR");
 }
 
 static void test_untracking_unknown_path_is_noop(void)
@@ -103,14 +104,14 @@ static void test_tmpdir_change_uses_new_directory(void)
     char *first_tmpdir = t_tempdir();
     char *second_tmpdir = t_tempdir();
 
-    setenv("TMPDIR", first_tmpdir, 1);
+    t_env_set("TMPDIR", first_tmpdir);
     char *first_path = NULL;
     int first_fd = tempfile_create("t-", "", &first_path);
     EXPECT(first_fd >= 0);
     close(first_fd);
     EXPECT(path_is_under(first_path, first_tmpdir));
 
-    setenv("TMPDIR", second_tmpdir, 1);
+    t_env_set("TMPDIR", second_tmpdir);
     char *second_path = NULL;
     int second_fd = tempfile_create("t-", "", &second_path);
     EXPECT(second_fd >= 0);
@@ -128,7 +129,7 @@ static void test_tmpdir_change_uses_new_directory(void)
     free(first_container);
     free(first_path);
     free(second_path);
-    unsetenv("TMPDIR");
+    t_env_unset("TMPDIR");
 }
 
 static void test_cleanup_retries_retired_nonempty_directory(void)
@@ -136,7 +137,7 @@ static void test_cleanup_retries_retired_nonempty_directory(void)
     char *first_tmpdir = t_tempdir();
     char *second_tmpdir = t_tempdir();
 
-    setenv("TMPDIR", first_tmpdir, 1);
+    t_env_set("TMPDIR", first_tmpdir);
     char *kept_path = NULL;
     int kept_fd = tempfile_create("t-", "", &kept_path);
     EXPECT(kept_fd >= 0);
@@ -144,7 +145,7 @@ static void test_cleanup_retries_retired_nonempty_directory(void)
     tempfile_untrack(kept_path);
     char *first_container = parent_dir(kept_path);
 
-    setenv("TMPDIR", second_tmpdir, 1);
+    t_env_set("TMPDIR", second_tmpdir);
     char *removed_path = NULL;
     int removed_fd = tempfile_create("t-", "", &removed_path);
     EXPECT(removed_fd >= 0);
@@ -164,13 +165,13 @@ static void test_cleanup_retries_retired_nonempty_directory(void)
     free(first_container);
     free(kept_path);
     free(removed_path);
-    unsetenv("TMPDIR");
+    t_env_unset("TMPDIR");
 }
 
 static void test_cleanup_forgets_externally_removed_directory(void)
 {
     char *tmpdir = t_tempdir();
-    setenv("TMPDIR", tmpdir, 1);
+    t_env_set("TMPDIR", tmpdir);
 
     char *first_path = NULL;
     int first_fd = tempfile_create("t-", "", &first_path);
@@ -196,13 +197,13 @@ static void test_cleanup_forgets_externally_removed_directory(void)
     free(first_path);
     free(second_path);
     free(removed_container);
-    unsetenv("TMPDIR");
+    t_env_unset("TMPDIR");
 }
 
 static void test_create_recovers_from_externally_removed_directory(void)
 {
     char *tmpdir = t_tempdir();
-    setenv("TMPDIR", tmpdir, 1);
+    t_env_set("TMPDIR", tmpdir);
 
     char *first_path = NULL;
     int first_fd = tempfile_create("t-", "", &first_path);
@@ -227,12 +228,12 @@ static void test_create_recovers_from_externally_removed_directory(void)
     free(first_path);
     free(second_path);
     free(removed_container);
-    unsetenv("TMPDIR");
+    t_env_unset("TMPDIR");
 }
 
 static void test_invalid_utf8_tmpdir_falls_back_to_tmp(void)
 {
-    setenv("TMPDIR", "/tmp/\xff-bogus", 1);
+    t_env_set("TMPDIR", "/tmp/\xff-bogus");
 
     char *path = NULL;
     int fd = tempfile_create("t-", "", &path);
@@ -242,7 +243,7 @@ static void test_invalid_utf8_tmpdir_falls_back_to_tmp(void)
 
     tempfiles_cleanup();
     free(path);
-    unsetenv("TMPDIR");
+    t_env_unset("TMPDIR");
 }
 
 static void test_invalid_name_fragments_are_rejected(void)
@@ -283,7 +284,7 @@ static void test_create_reports_tmpdir_error(void)
 {
     char missing_tmpdir[512];
     snprintf(missing_tmpdir, sizeof(missing_tmpdir), "%s/missing", t_tempdir());
-    setenv("TMPDIR", missing_tmpdir, 1);
+    t_env_set("TMPDIR", missing_tmpdir);
 
     char sentinel;
     char *path = &sentinel;
@@ -292,7 +293,7 @@ static void test_create_reports_tmpdir_error(void)
     EXPECT(path == NULL);
     EXPECT(errno == ENOENT);
 
-    unsetenv("TMPDIR");
+    t_env_unset("TMPDIR");
 }
 
 int main(void)

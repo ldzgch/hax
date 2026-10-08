@@ -9,9 +9,11 @@
 #include <sys/stat.h>
 
 #include "catalog.h"
+#include "catalog_fixture.h"
 #include "config.h"
 #include "diag.h"
 #include "effort.h"
+#include "env.h"
 #include "harness.h"
 #include "loopback.h"
 #include "provider.h"
@@ -275,27 +277,17 @@ static int log_error(const struct stream_event *event, void *user)
 /* Point the catalog cache tier at a private snapshot naming each model's wire. */
 static void write_catalog_fixture(void)
 {
-    char *dir = t_tempdir();
-    setenv("XDG_CACHE_HOME", dir, 1);
-    char path[512];
-    snprintf(path, sizeof(path), "%s/hax", dir);
-    mkdir(path, 0755);
-    snprintf(path, sizeof(path), "%s/hax/catalog.json", dir);
-    FILE *f = fopen(path, "w");
-    if (!f)
-        FAIL("fopen %s: %s", path, strerror(errno));
-    fputs("{\"zen-test\": {\"npm\": \"@ai-sdk/openai-compatible\", \"models\": {"
-          "\"claude-hint\": {\"provider\": {\"npm\": \"@ai-sdk/anthropic\"}},"
-          "\"claude-adaptive\": {\"provider\": {\"npm\": \"@ai-sdk/anthropic\"},"
-          " \"reasoning_options\": [{\"type\": \"effort\", \"values\": [\"low\", \"high\"]},"
-          " {\"type\": \"budget_tokens\"}]},"
-          "\"claude-budget\": {\"provider\": {\"npm\": \"@ai-sdk/anthropic\"},"
-          " \"reasoning_options\": [{\"type\": \"budget_tokens\"}]},"
-          "\"gemini-hint\": {\"provider\": {\"npm\": \"@ai-sdk/google\"}},"
-          "\"think-hint\": {\"interleaved\": {\"field\": \"reasoning_content\"}},"
-          "\"no-replay\": {\"interleaved\": false}}}}",
-          f);
-    fclose(f);
+    t_catalog_write(
+        "{\"zen-test\": {\"npm\": \"@ai-sdk/openai-compatible\", \"models\": {"
+        "\"claude-hint\": {\"provider\": {\"npm\": \"@ai-sdk/anthropic\"}},"
+        "\"claude-adaptive\": {\"provider\": {\"npm\": \"@ai-sdk/anthropic\"},"
+        " \"reasoning_options\": [{\"type\": \"effort\", \"values\": [\"low\", \"high\"]},"
+        " {\"type\": \"budget_tokens\"}]},"
+        "\"claude-budget\": {\"provider\": {\"npm\": \"@ai-sdk/anthropic\"},"
+        " \"reasoning_options\": [{\"type\": \"budget_tokens\"}]},"
+        "\"gemini-hint\": {\"provider\": {\"npm\": \"@ai-sdk/google\"}},"
+        "\"think-hint\": {\"interleaved\": {\"field\": \"reasoning_content\"}},"
+        "\"no-replay\": {\"interleaved\": false}}}}");
 }
 
 /* One provider, one endpoint, three wires: model_apis rules and catalog hints pick each
@@ -1048,7 +1040,9 @@ static void test_unsupported_protocol_reported(void)
 
 int main(void)
 {
+#ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
+#endif
     test_list_efforts_wiring();
     test_messages_efforts_follow_thinking_mode();
     test_api_override_moves_wire();

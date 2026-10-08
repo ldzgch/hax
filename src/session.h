@@ -4,8 +4,10 @@
 
 #include <jansson.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "provider.h"
+#include "session_paths.h"
 
 /* Append-only conversation persistence. Each session is a JSONL file under the current
  * directory's bucket in the XDG state tree. The first line is a header; subsequent lines are
@@ -125,9 +127,6 @@ const char *session_log_resume_hint(const struct session_log *log);
  * materialized file carries, available before anything is written. NULL without a log. */
 const char *session_log_id(const struct session_log *log);
 
-/* True when path has hax's timestamp-and-UUID session filename. */
-int session_path_is_standard(const char *path);
-
 /* Refreshes path's mtime while coordinating with the pruner.
  * Returns 0 on success, -1 on failure. */
 int session_touch(const char *path);
@@ -173,7 +172,7 @@ struct session_label {
 struct session_entry {
     char *path;
     char *id;
-    long mtime;
+    int64_t mtime;
     long mtime_nsec;
     struct session_label label; /* zeroed until populated by session_label_read */
 };

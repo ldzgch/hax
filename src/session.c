@@ -1,10 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "session.h"
 
-#include <ctype.h>
-#include <dirent.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <jansson.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -12,30 +9,23 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <sys/file.h>
-#include <sys/stat.h>
 
 #include "config.h"
 #include "diag.h"
 #include "provider.h"
+#include "session_paths.h"
 #include "session_prune.h"
+#include "session_storage.h"
 #include "version.h"
 #include "xalloc.h"
+#include "system/clock.h"
 #include "system/fs.h"
 #include "system/git.h"
+#include "system/line_reader.h"
 #include "system/path.h"
 #include "system/rand.h"
 #include "text/display_safe.h"
 #include "text/width.h"
-
-/* struct stat's sub-second mtime field is spelled differently across
- * platforms. Used to break ties between sessions created in the same
- * second so --continue / the picker reliably pick the most recent. */
-#if defined(__APPLE__)
-#define ST_MTIME_NSEC(st) ((long)(st).st_mtimespec.tv_nsec)
-#else
-#define ST_MTIME_NSEC(st) ((long)(st).st_mtim.tv_nsec)
-#endif
 
 static const char *item_kind_name(enum item_kind k)
 {
@@ -339,19 +329,36 @@ static char *encode_cwd(const char *cwd)
 
     uint64_t hash = 1469598103934665603ULL;
     for (const char *cursor = cwd; *cursor; cursor++) {
-        hash ^= (unsigned char)*cursor;
+        unsigned char byte = (unsigned char)*cursor;
+#ifdef _WIN32
+        /* Match native getcwd spelling so existing session buckets retain their hash. */
+        if (path_is_separator((char)byte))
+            byte = '\\';
+#endif
+        hash ^= byte;
         hash *= 1099511628211ULL;
     }
 
     const char *relative = cwd;
-    while (*relative == '/')
+    while (path_is_separator(*relative))
         relative++;
     if (!*relative)
         relative = "root";
     char slug[CWD_SLUG_MAX];
     size_t length = 0;
-    for (; relative[length] && length < sizeof(slug) - 1; length++)
-        slug[length] = relative[length] == '/' ? '-' : relative[length];
+    for (; relative[length] && length < sizeof(slug) - 1; length++) {
+        int replace = path_is_separator(relative[length]);
+#ifdef _WIN32
+        replace |=
+            (unsigned char)relative[length] < 0x20 || strchr("<>:\"|?*", relative[length]) != NULL;
+#endif
+        slug[length] = replace ? '-' : relative[length];
+    }
+#ifdef _WIN32
+    /* A native filename must not end with a truncated UTF-8 scalar. */
+    while (length && ((unsigned char)relative[length] & 0xc0) == 0x80)
+        length--;
+#endif
     slug[length] = '\0';
 
     return xasprintf("%s.%016llx", slug, (unsigned long long)hash);
@@ -367,69 +374,9 @@ static char *session_directory(const char *cwd)
     return directory;
 }
 
-static int is_uuid(const char *value, size_t length)
-{
-    if (length != 36)
-        return 0;
-    for (size_t i = 0; i < length; i++) {
-        if (i == 8 || i == 13 || i == 18 || i == 23) {
-            if (value[i] != '-')
-                return 0;
-        } else if (!isxdigit((unsigned char)value[i])) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static int has_session_timestamp(const char *value)
-{
-    static const char shape[] = "dddd-dd-ddTdd-dd-ddZ";
-    for (size_t i = 0; i < sizeof(shape) - 1; i++) {
-        if (shape[i] == 'd') {
-            if (!isdigit((unsigned char)value[i]))
-                return 0;
-        } else if (value[i] != shape[i]) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-/* Validate the whole basename so pruning cannot claim unrelated UUID-suffixed JSONL files. */
-static char *session_id_from_path(const char *path)
-{
-    const char *basename = strrchr(path, '/');
-    basename = basename ? basename + 1 : path;
-    if (strlen(basename) != 63 || !has_session_timestamp(basename) || basename[20] != '_' ||
-        strcmp(basename + 57, ".jsonl") != 0 || !is_uuid(basename + 21, 36))
-        return NULL;
-    char *id = xmalloc(37);
-    memcpy(id, basename + 21, 36);
-    id[36] = '\0';
-    return id;
-}
-
-int session_path_is_standard(const char *path)
-{
-    char *id = session_id_from_path(path);
-    int standard = id != NULL;
-    free(id);
-    return standard;
-}
-
 int session_touch(const char *path)
 {
-    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (fd < 0)
-        return -1;
-    /* If flock is unsupported, pruning also fails closed; touching can still
-     * proceed. On supported filesystems this waits out an in-flight prune. */
-    (void)flock(fd, LOCK_SH);
-    struct stat st;
-    int result = fstat(fd, &st) == 0 && st.st_nlink > 0 ? futimens(fd, NULL) : -1;
-    close(fd);
-    return result;
+    return session_storage_touch(path);
 }
 
 struct session_log {
@@ -451,7 +398,7 @@ struct session_log {
 /* Selection fields survive /new; identity and writer state do not. */
 static int prepare_fresh_session(struct session_log *log)
 {
-    char *cwd = getcwd(NULL, 0);
+    char *cwd = path_cwd();
     if (!cwd)
         return -1;
     char *directory = session_directory(cwd);
@@ -464,7 +411,7 @@ static int prepare_fresh_session(struct session_log *log)
     gen_uuid_v4(uuid);
     time_t now = time(NULL);
     struct tm utc;
-    gmtime_r(&now, &utc);
+    (void)clock_utc(now, &utc);
     char filename_time[32];
     char header_time[32];
     /* Colons are not portable in filenames. */
@@ -537,42 +484,9 @@ struct session_log *session_log_resume(const char *path, const char *provider, c
     return log;
 }
 
-/* Session contents may contain secrets, so both new and resumed files are owner-only. */
 static FILE *open_session_file(const char *path, enum session_file_mode mode)
 {
-    /* Append omits O_CREAT so a removed session is not recreated without a header. */
-    int flags = O_CLOEXEC;
-    flags |= mode == SESSION_FILE_APPEND ? O_RDWR | O_APPEND : O_CREAT | O_WRONLY | O_TRUNC;
-    int fd = open(path, flags, 0600);
-    if (fd < 0)
-        return NULL;
-    (void)fchmod(fd, 0600);
-
-    /* A successful pruner lock may already refer to an unlinked inode. */
-    if (flock(fd, LOCK_SH) == 0) {
-        struct stat locked_stat;
-        if (fstat(fd, &locked_stat) != 0 || locked_stat.st_nlink == 0)
-            goto error;
-    }
-    if (mode == SESSION_FILE_APPEND) {
-        /* Separate a partial crash record from the next valid JSON object. */
-        struct stat file_stat;
-        char last_byte;
-        if (fstat(fd, &file_stat) != 0)
-            goto error;
-        if (file_stat.st_size > 0 && (pread(fd, &last_byte, 1, file_stat.st_size - 1) != 1 ||
-                                      (last_byte != '\n' && write(fd, "\n", 1) != 1)))
-            goto error;
-    }
-    FILE *file = fdopen(fd, mode == SESSION_FILE_APPEND ? "a" : "w");
-    if (!file)
-        goto error;
-    setvbuf(file, NULL, _IOLBF, 0);
-    return file;
-
-error:
-    close(fd);
-    return NULL;
+    return session_storage_open(path, mode == SESSION_FILE_APPEND);
 }
 
 static int materialize_log(struct session_log *log)
@@ -858,15 +772,17 @@ static char *fork_session_path(const char *source_path, const char *filename_tim
     return path;
 }
 
+static FILE *open_session_reader(const char *path);
+
 static json_t *read_header(const char *path)
 {
-    FILE *source = fopen(path, "r");
+    FILE *source = open_session_reader(path);
     if (!source)
         return NULL;
     char *line = NULL;
     size_t capacity = 0;
     json_t *header = NULL;
-    if (getline(&line, &capacity, source) >= 0)
+    if (line_reader_get(source, &line, &capacity) >= 0)
         header = json_loads(line, 0, NULL);
     free(line);
     fclose(source);
@@ -904,7 +820,7 @@ int session_fork_file(const char *source_path, const struct item *items, size_t 
     gen_uuid_v4(uuid);
     time_t now = time(NULL);
     struct tm utc;
-    gmtime_r(&now, &utc);
+    (void)clock_utc(now, &utc);
     char filename_time[32];
     char header_time[32];
     strftime(filename_time, sizeof(filename_time), "%Y-%m-%dT%H-%M-%SZ", &utc);
@@ -923,11 +839,11 @@ int session_fork_file(const char *source_path, const struct item *items, size_t 
     set_or_delete_string(header, "preset", selection->preset);
 
     destination_path = fork_session_path(source_path, filename_time, uuid);
-    destination_fd = open(destination_path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+    destination_fd = fs_open_private(destination_path, 1);
     if (destination_fd < 0)
         goto out;
     destination_created = 1;
-    destination = fdopen(destination_fd, "w");
+    destination = fdopen(destination_fd, "wb");
     if (!destination)
         goto out;
     destination_fd = -1;
@@ -1034,7 +950,7 @@ static FILE *open_session_reader(const char *path)
     if (fd < 0)
         return NULL;
 
-    FILE *file = fdopen(fd, "r");
+    FILE *file = fdopen(fd, "rb");
     if (!file) {
         int saved_errno = errno;
         close(fd);
@@ -1052,7 +968,7 @@ int session_read_meta(const char *path, struct session_meta *out)
 
     char *line = NULL;
     size_t capacity = 0;
-    while (getline(&line, &capacity, file) >= 0) {
+    while (line_reader_get(file, &line, &capacity) >= 0) {
         /* Item records use "kind", so most large lines need no JSON parse. */
         if (!strstr(line, "\"type\""))
             continue;
@@ -1144,7 +1060,7 @@ int session_load_all(const char *path, struct session_loaded *out)
     char *line = NULL;
     size_t line_capacity = 0;
 
-    while (getline(&line, &line_capacity, file) >= 0) {
+    while (line_reader_get(file, &line, &line_capacity) >= 0) {
         json_t *object = json_loads(line, 0, NULL);
         if (!object)
             continue; /* A crash may leave one partial final record. */
@@ -1336,6 +1252,39 @@ static int has_jsonl_extension(const char *name)
     return length >= 6 && strcmp(name + length - 6, ".jsonl") == 0;
 }
 
+struct session_listing {
+    const char *directory;
+    struct session_entry *entries;
+    size_t count;
+    size_t capacity;
+    time_t cutoff;
+};
+
+static void collect_session(const char *name, int64_t mtime, long mtime_nsec, void *userdata)
+{
+    struct session_listing *listing = userdata;
+    if (!has_jsonl_extension(name))
+        return;
+    char *path = path_join(listing->directory, name);
+    char *id = session_id_from_path(path);
+    if (id && listing->cutoff && mtime < listing->cutoff) {
+        free(id);
+        free(path);
+        return;
+    }
+    if (listing->count == listing->capacity) {
+        listing->capacity = listing->capacity ? listing->capacity * 2 : 8;
+        listing->entries =
+            xrealloc(listing->entries, listing->capacity * sizeof(*listing->entries));
+    }
+    listing->entries[listing->count++] = (struct session_entry){
+        .path = path,
+        .id = id,
+        .mtime = mtime,
+        .mtime_nsec = mtime_nsec,
+    };
+}
+
 int session_list(const char *cwd, struct session_entry **out_entries, size_t *out_count)
 {
     *out_entries = NULL;
@@ -1343,50 +1292,15 @@ int session_list(const char *cwd, struct session_entry **out_entries, size_t *ou
     char *directory = session_directory(cwd);
     if (!directory)
         return 0;
-    DIR *directory_stream = opendir(directory);
-    if (!directory_stream) {
-        free(directory);
-        return 0;
-    }
-
-    struct session_entry *entries = NULL;
-    size_t count = 0;
-    size_t capacity = 0;
-    time_t cutoff = session_retention_cutoff();
-    struct dirent *directory_entry;
-    while ((directory_entry = readdir(directory_stream))) {
-        if (!has_jsonl_extension(directory_entry->d_name))
-            continue;
-        char *path = xasprintf("%s/%s", directory, directory_entry->d_name);
-        struct stat file_stat;
-        if (stat(path, &file_stat) != 0 || !S_ISREG(file_stat.st_mode)) {
-            free(path);
-            continue;
-        }
-        char *id = session_id_from_path(path);
-        if (id && cutoff && file_stat.st_mtime < cutoff) {
-            free(id);
-            free(path);
-            continue;
-        }
-        struct session_entry entry = {
-            .path = path,
-            .id = id,
-            .mtime = (long)file_stat.st_mtime,
-            .mtime_nsec = ST_MTIME_NSEC(file_stat),
-        };
-        if (count == capacity) {
-            capacity = capacity ? capacity * 2 : 8;
-            entries = xrealloc(entries, capacity * sizeof(*entries));
-        }
-        entries[count++] = entry;
-    }
-    closedir(directory_stream);
+    struct session_listing listing = {
+        .directory = directory,
+        .cutoff = session_retention_cutoff(),
+    };
+    (void)session_storage_list(directory, collect_session, &listing);
     free(directory);
-
-    qsort(entries, count, sizeof(*entries), compare_session_mtime_desc);
-    *out_entries = entries;
-    *out_count = count;
+    qsort(listing.entries, listing.count, sizeof(*listing.entries), compare_session_mtime_desc);
+    *out_entries = listing.entries;
+    *out_count = listing.count;
     return 0;
 }
 

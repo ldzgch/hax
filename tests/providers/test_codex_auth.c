@@ -3,9 +3,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include "cred_store.h"
+#include "env.h"
+#include "files.h"
 #include "harness.h"
 #include "xalloc.h"
 #include "providers/codex_auth.h"
@@ -161,10 +162,10 @@ static char *auth_home(void)
 {
     char *home = t_tempdir();
     char *codex_dir = xasprintf("%s/.codex", home);
-    EXPECT(mkdir(codex_dir, 0700) == 0);
+    EXPECT(t_mkdir(codex_dir, 0700) == 0);
     free(codex_dir);
-    setenv("HOME", home, 1);
-    unsetenv("XDG_STATE_HOME");
+    t_env_set("HOME", home);
+    t_env_set("XDG_STATE_HOME", home);
     return home;
 }
 

@@ -25,6 +25,18 @@ else
     build_suffix=" ($BUILD_DIR)"
 fi
 
+python_tool() {
+    for candidate in python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1 &&
+            "$candidate" -c 'import sys; sys.exit(sys.version_info.major != 3)' 2>/dev/null; then
+            command -v "$candidate"
+            return
+        fi
+    done
+    printf '%s\n' 'error: Python 3 not found on PATH' >&2
+    exit 1
+}
+
 # Homebrew's keg-only LLVM tools are not linked into PATH on macOS.
 llvm_tool() {
     if command -v "$1" >/dev/null 2>&1; then
@@ -77,7 +89,7 @@ run_clang_tidy_captured() {
     compact_log=$captured_log.compact
     trap 'rm -f "$captured_log" "$compact_log"' 0
     if ! "$@" >"$captured_log" 2>&1; then
-        python3 scripts/filter_clang_tidy.py "$clang_tidy" <"$captured_log" >"$compact_log"
+        "$python" scripts/filter_clang_tidy.py "$clang_tidy" <"$captured_log" >"$compact_log"
         mv "$compact_log" "$captured_log"
         relay_log >&2
         exit 1
@@ -127,6 +139,7 @@ build_project() {
 }
 
 lint_sources() {
+    python=$(python_tool)
     clang_format=$(llvm_tool clang-format)
     clang_tidy=$(llvm_tool clang-tidy)
     run_clang_tidy=$(llvm_tool run-clang-tidy)
@@ -140,15 +153,32 @@ lint_sources() {
 
     find src tests -type f \( -name '*.c' -o -name '*.h' \) \
         -exec "$clang_format" --dry-run --Werror --ferror-limit=1 {} +
-    python3 scripts/lint_style.py
+    "$python" scripts/lint_style.py
 
     # Regenerate the compile database before clang-tidy; otherwise translation units added since
     # the last Meson setup are silently skipped.
     setup_build_dir quiet
     run_captured env NINJA_STATUS='HAX_NINJA_STATUS ' ninja -C "$BUILD_DIR" build.ninja
     drop_captured
-    run_clang_tidy_captured "$run_clang_tidy" -clang-tidy-binary "$clang_tidy" -quiet \
-        -p "$BUILD_DIR"
+
+    set --
+    case $(uname) in
+    MINGW* | MSYS*)
+        # LLVM for Windows defaults to the MSVC target and cannot infer GCC's MinGW headers.
+        compiler=$(meson introspect --compilers "$BUILD_DIR" | "$python" -c \
+            'import json, sys; print(json.load(sys.stdin)["host"]["c"]["exelist"][0].replace(chr(92), "/"))')
+        target=$("$compiler" -dumpmachine)
+        kernel32=$("$compiler" -print-file-name=libkernel32.a)
+        mingw_include=$(dirname "$(dirname "$kernel32")")/include
+        if [ ! -d "$mingw_include" ]; then
+            printf 'error: MinGW headers not found beside %s\n' "$kernel32" >&2
+            exit 1
+        fi
+        set -- "-extra-arg=--target=$target" "-extra-arg=-isystem$mingw_include"
+        ;;
+    esac
+    run_clang_tidy_captured "$python" "$run_clang_tidy" -clang-tidy-binary "$clang_tidy" -quiet \
+        -p "$BUILD_DIR" "$@"
     drop_captured
     printf '%s\n' 'lint OK'
 }

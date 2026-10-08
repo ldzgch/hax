@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 #include "system/locale.h"
 
+#ifndef _WIN32
 #include <langinfo.h>
+#endif
 #include <locale.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +18,12 @@ void locale_init_utf8(void)
     locale_is_utf8 = 0;
     locale_children_are_utf8 = 0;
 
+#ifdef _WIN32
+    /* Native decoding and cell measurement do not depend on the CRT's wchar_t or locale. */
+    setlocale(LC_CTYPE, ".UTF8");
+    locale_is_utf8 = 1;
+    locale_children_are_utf8 = 1;
+#else
     setlocale(LC_CTYPE, "");
     if (strcmp(nl_langinfo(CODESET), "UTF-8") == 0) {
         locale_is_utf8 = 1;
@@ -47,6 +55,7 @@ void locale_init_utf8(void)
         return;
     setenv("LC_CTYPE", chosen, 1);
     locale_children_are_utf8 = 1;
+#endif
 }
 
 int locale_have_utf8(void)
