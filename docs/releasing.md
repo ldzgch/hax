@@ -1,9 +1,11 @@
 # Releasing
 
 Releases are tag-driven: pushing a `v*` tag publishes a GitHub release with the source tarball,
-fully static Linux binaries for x86_64 and aarch64 (`scripts/build_static.sh`, each tarball
-containing the binary under its canonical name `hax`), and a `SHA256SUMS` file, with the
-matching `CHANGELOG.md` section as notes (`.github/workflows/release.yml`). Release binaries
+fully static Linux binaries for x86_64 and aarch64 (`scripts/build_static.sh`), a native Windows
+x86_64 executable, and a `SHA256SUMS` file. Binary archives include the executable and the
+project's `LICENSE` and `LICENSES/` files. The Linux binary is under its canonical name `hax`; the
+Windows binary is `hax.exe`. Release notes come from the matching `CHANGELOG.md` section
+(`.github/workflows/release.yml`). Release binaries
 build from a plain source snapshot and stamp exactly the declared project version, which the
 workflow checks against the tag; dev builds stamp `git describe` — tag + distance + commit,
 with a `+` suffix marking a dirty tree.

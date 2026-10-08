@@ -9,6 +9,9 @@ notes (see [docs/releasing.md](docs/releasing.md)).
 
 ### Added
 
+- Native Windows x86_64 release archive alongside Linux binaries; binary archives include project
+  license files.
+
 - Native Windows build and test instructions and CI coverage, including REPL pseudoconsole tests.
 - A shared Python build runner for Linux, macOS, BSD, and Windows: `scripts/check.py` provides
   build, test, lint, install, and build-directory presets without requiring a Unix shell or Make.

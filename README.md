@@ -1,5 +1,7 @@
 <div align="center">
 
+_Note: vibecoded port to Windows of [this project](https://github.com/OleksandrChekhovskyi/hax)_.
+
 # hax
 
 **A minimalist, terminal-native coding agent written in C.**
@@ -74,16 +76,13 @@ Debian/Ubuntu, Fedora, Arch, openSUSE, Alpine, macOS, FreeBSD, and OpenBSD. Sour
 against system libraries. `python3 scripts/install_deps.py tests` also installs `tmux` for the
 interactive tests; `lint` installs LLVM where supported.
 
-On Windows, first install [Git for Windows](https://git-scm.com/download/win), native Python,
+On Windows, first install [Git for Windows](https://git-scm.com/download/win) (Git Bash is the shell that the LLM will use), native Python,
 Meson (`python -m pip install meson`), CMake 3.24+, Ninja, and a **MinGW-w64 GCC toolchain with POSIX
 threads**. Put `gcc`, `cmake`, and `ninja` on `PATH` in the shell you build from; MSVC is not
-supported. For example, MSYS2's UCRT64 toolchain supplies these with
-`pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja`;
-then add `C:\msys64\ucrt64\bin` to your native shell's `PATH`. Use native Python, not MSYS Python.
+supported.
 The dependency installer downloads checksum-verified libcurl/Jansson sources and builds them under
 `build-windows-deps/`; the build runner finds this prefix automatically. Windows builds use static
 libraries and Windows TLS/certificate roots, and tests use a native pseudoconsole instead of tmux.
-Run `build/hax.exe` from Windows Terminal; Bash tools use Git Bash, not WSL or PowerShell.
 
 On Unix, `make`, `make tests`, `make lint`, and `make install` remain shortcuts for the shared
 runner. `make symlink` links the development binary into `~/.local/bin`. For selected tests or
@@ -95,10 +94,6 @@ python3 scripts/check.py build --build-dir build-release
 python3 scripts/check.py test --build-dir build-asan
 python3 scripts/check.py lint
 ```
-
-Sanitizer presets require compiler/runtime support (the documented MinGW build does not supply
-ASan/TSan). Lint requires `clang-format`, `clang-tidy`, and `run-clang-tidy` on `PATH`; the Windows
-lint gate currently reports MinGW header-attribution and Windows-specific findings and is not clean.
 
 The examples below use `hax` as if it is on `PATH`; after a plain build, use `./build/hax`
 (`./build/hax.exe` on Windows).
