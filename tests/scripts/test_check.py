@@ -54,10 +54,19 @@ class CheckTests(unittest.TestCase):
             paths = {path.name for path in build.sources("src")}
             self.assertIn("spawn_win.c", paths)
             self.assertNotIn("spawn.c", paths)
+            tests = {path.name for path in build.sources("tests")}
+            self.assertIn("test_spawn_win.c", tests)
+            self.assertIn("test_win_process.c", tests)
+            self.assertIn("test_win_utf8.c", tests)
         with patch.object(build, "WINDOWS", False):
             paths = {path.name for path in build.sources("src")}
             self.assertIn("spawn.c", paths)
             self.assertNotIn("spawn_win.c", paths)
+            tests = {path.name for path in build.sources("tests")}
+            self.assertIn("test_spawn.c", tests)
+            self.assertNotIn("test_spawn_win.c", tests)
+            self.assertNotIn("test_win_process.c", tests)
+            self.assertNotIn("test_win_utf8.c", tests)
 
     def test_captured_relays_utf8_and_failure_status(self):
         output = io.StringIO()

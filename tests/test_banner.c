@@ -7,6 +7,7 @@
 #include "agent_core.h"
 #include "banner.h"
 #include "env.h"
+#include "files.h"
 #include "harness.h"
 #include "provider.h"
 #include "stream_capture.h"
@@ -150,8 +151,7 @@ static void test_print_adds_key_tips(void)
     fflush(stdout);
     int saved = dup(STDOUT_FILENO);
     EXPECT(saved >= 0);
-    struct t_stream_capture capture;
-    FILE *tmp = t_stream_capture_open(&capture);
+    FILE *tmp = t_tmpfile();
     EXPECT(tmp != NULL);
     if (!tmp) {
         close(saved);
@@ -164,8 +164,13 @@ static void test_print_adds_key_tips(void)
     fflush(stdout);
     EXPECT(dup2(saved, STDOUT_FILENO) >= 0);
     close(saved);
-    char *out = strip_sgr(t_stream_capture_read(&capture));
-    t_stream_capture_close(&capture);
+    EXPECT(fseek(tmp, 0, SEEK_SET) == 0);
+    char text[256];
+    size_t length = fread(text, 1, sizeof(text) - 1, tmp);
+    EXPECT(!ferror(tmp));
+    text[length] = '\0';
+    fclose(tmp);
+    char *out = strip_sgr(text);
     EXPECT_STR_EQ(out, "▌ hax › mock · model-a\n"
                        "▌ ctrl-d quit · try /help\n");
     free(out);

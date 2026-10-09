@@ -14,6 +14,8 @@ notes (see [docs/releasing.md](docs/releasing.md)).
 
 ### Fixed
 
+- Exclude Windows-only unit tests from Linux and other non-Windows builds.
+
 - Preserve bracketed multiline paste in native Windows terminal input, and document Windows
   Terminal's Ctrl-V binding requirement for clipboard image capture.
 

@@ -439,7 +439,6 @@ static void test_read_file_fifo_rejected_no_hang(void)
     EXPECT(errno == EINVAL);
     free(p);
     free(p2);
-    free(path);
 #endif
 }
 

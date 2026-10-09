@@ -22,7 +22,7 @@ def sources(directory):
     result = []
     for path in paths:
         stem = path.stem
-        if not WINDOWS and (stem.endswith("_win") or stem.startswith("win_")):
+        if not WINDOWS and (stem.endswith("_win") or stem.startswith(("win_", "test_win_"))):
             continue
         if WINDOWS and (stem in pairs or stem in {"test_fs", "test_spawn", "test_tempfiles"}
                         or stem.endswith("_posix")):
