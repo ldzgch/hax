@@ -13,30 +13,17 @@ python3 scripts/check.py lint             # clang-format + style script + clang-
 python3 scripts/check.py test <name>...   # build + selected tests
 ```
 
-Use `python` on Windows. `make`, `make tests`, `make lint`, and `scripts/check.sh` remain Unix
-shortcuts. See README.md for native Windows toolchain prerequisites.
+Use `python` on Windows. `scripts/check.sh` is a POSIX convenience wrapper.
+The Python runner invokes the C compiler and archiver directly, relays diagnostics, and prints
+compact confirmations. `-j` sets parallelism; test names accept glob patterns.
 
-The shared `scripts/check.py` runner drops routine runner progress but relays
-compiler and test diagnostics whether or not the phase succeeds, so a clean run is just a
-compact confirmation — prefer these over raw meson invocations to keep output small. The
-verbose equivalents (`meson compile -C build`, `meson test -C build --print-errorlogs`)
-remain available for per-test timings or full build logs.
+`python3 scripts/check.py lint` runs clang-format, project style checks, and clang-tidy.
+Run `clang-format -i` on any C source/header you touch before reporting done.
 
-`make lint` is the single "is the code clean" gate: clang-format, the project style checks
-in `scripts/lint_style.py`, and clang-tidy. Failures say what to fix; the conventions they
-enforce are documented where they live (`.clang-format`, `.clang-tidy`, the script's
-docstring). Run `clang-format -i` on any C source/header you touch before reporting done.
-
-`--build-dir` (or `BUILD_DIR`) selects the build directory; these presets are set up on first use.
-Any other name needs `meson setup <dir> <options>` first. Sanitizers require compiler/runtime
-support and are unavailable in the documented MinGW toolchain.
-
-| `BUILD_DIR` | Meson options | For |
-| --- | --- | --- |
-| `build` (default) | `debugoptimized` from `meson.build` | everyday build, test, lint |
-| `build-asan` | `-Db_sanitize=address,undefined` | memory errors, undefined behavior |
-| `build-tsan` | `-Db_sanitize=thread` | data races |
-| `build-release` | `--buildtype=release` | extra inlining warnings; run before a release |
+`--build-dir` (or `BUILD_DIR`) selects the build directory. Presets select debug (`build`),
+release (`build-release`), address/undefined sanitizers (`build-asan`), or thread sanitizer
+(`build-tsan`). Other directory names default to debug; `--mode` overrides the preset.
+Sanitizers require compiler/runtime support and are unavailable in the documented MinGW toolchain.
 
 ```sh
 python3 scripts/check.py test --build-dir build-asan
@@ -127,9 +114,9 @@ Extension workflows:
   `registry.c`'s `DEFS[]` table at their autoselect priority, and config.json `providers.*`
   blocks overlay shipped defs or add data-only ones. Prefer pure data; add capability hooks
   (`parse_model`, `probe_model`, `query_usage`, ...) only for genuinely provider-specific
-  behavior, and a `construct` override only when construction itself needs code. Hook sources go
-  in `meson.build`; a user-visible endpoint variant should be config, not C.
-- A compiled-in tool needs its source in `meson.build`, an exported `const struct tool` declaration
+  behavior, and a `construct` override only when construction itself needs code. Hook sources are
+  discovered automatically; a user-visible endpoint variant should be config, not C.
+- A compiled-in tool needs a source under `src/`, an exported `const struct tool` declaration
   in `tool.h`, and an entry in `agent_core.c`'s `TOOLS[]`.
 - Keep protocol translation and terminal-independent state machines pure and separately testable;
   do not require HTTP or a TTY to test parsing and state transitions.
@@ -138,13 +125,13 @@ Extension workflows:
 
 Unit tests are plain C binaries using `tests/harness.h` (`EXPECT`, `EXPECT_STR_EQ`, `T_SKIP`,
 `T_REPORT`). Create scratch directories with the harness's `t_tempdir()`, which removes them
-at process exit; raw `mkdtemp` in tests fails `make lint`. To add a test, append its source to
-`test_sources` in `tests/meson.build`, grouped to mirror the production `sources` list. Test
+at process exit; raw `mkdtemp` in tests fails lint. Tests named `test_*.c` under `tests/` are discovered
+automatically. Test
 names are path-derived: `tools/test_read.c` becomes `tools/read`, and `test_buf.c` becomes
 `buf`.
 
 End-to-end scenarios follow the same conventions in Python: standalone scripts under
-`tests/e2e/`, registered in `e2e_scenarios` in `tests/meson.build`. They run the built binary
+`tests/e2e/`, registered in `scripts/check.py`. They run the built binary
 hermetically against inline mock-provider scripts via `tests/e2e/harness.py`; its docstrings are
 the how-to, and `scripts/mock/` holds the fixtures for manual checks instead. REPL scenarios drive
 the binary through tmux with its `Terminal`; a change to REPL layout or terminal handling comes
@@ -170,12 +157,11 @@ Where a test goes:
 - Before writing a fixture (loopback server, fake command on `PATH`, scripted stream, scratch
   tree), look for one in sibling test files or the `test_support` library and reuse or extract it
   rather than copying it. Shared fixtures are a header plus a `.c` beside it (`tests/harness.h`,
-  `tests/loopback.h`, `tests/tools/bash_fixtures.h`), built into `test_support` in
-  `tests/meson.build`.
+  `tests/loopback.h`, `tests/tools/bash_fixtures.h`), automatically built into the test-support archive.
 
 ## Code style and conventions
 
-- C11, warning level 3, with the project feature defines from `meson.build`.
+- C11, `-Wall -Wextra -Wpedantic`, with the platform feature defines in `scripts/build.py`.
 - Linux-kernel-inspired userspace style: snake_case, no typedef'd structs, function braces on
   their own line, control-flow braces on the same line.
 - Every source file starts with `/* SPDX-License-Identifier: MIT */`.
@@ -214,7 +200,7 @@ Commit messages follow these patterns:
 
 ## Dependencies
 
-Dependencies are declared in `meson.build`. Keep the footprint small; before adding one, read
+Dependencies are declared in `scripts/build.py`. Keep the footprint small; before adding one, read
 [`docs/philosophy.md`](docs/philosophy.md#small-dependency-footprint). Every new dependency must be
 in Debian main and either ship with macOS or be available via a single `brew install`. Do not add
 GPL libraries.

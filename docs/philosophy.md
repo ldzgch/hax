@@ -60,7 +60,7 @@ Event hooks elsewhere serve a handful of needs, each of which hax answers more d
 
   ```sh
   hax -p "fix the failing tests"
-  until make tests; do
+  until python3 scripts/check.py test; do
       hax -c -p "tests are still failing, keep fixing"
   done
   ```

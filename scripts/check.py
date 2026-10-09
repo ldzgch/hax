@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Portable build, test, lint, and install entry point with compact diagnostics."""
 
+from concurrent.futures import ThreadPoolExecutor
+import fnmatch
 import argparse
 import json
 import os
@@ -11,14 +13,11 @@ import subprocess
 import sys
 
 from filter_clang_tidy import filter_output
+from build import Build, WINDOWS
 
 ROOT = Path(__file__).resolve().parent.parent
-PRESETS = {
-    "build": [],
-    "build-asan": ["-Db_sanitize=address,undefined"],
-    "build-tsan": ["-Db_sanitize=thread"],
-    "build-release": ["--buildtype=release"],
-}
+PRESETS = {"build": "debug", "build-asan": "asan", "build-tsan": "tsan",
+           "build-release": "release"}
 
 
 def tool(name: str) -> str:
@@ -47,10 +46,6 @@ def relay(output: str, build: Path) -> str:
     lines = []
     relative_root = os.path.relpath(ROOT, build).replace("\\", "/") + "/"
     for line in output.splitlines(keepends=True):
-        if line.startswith(("HAX_NINJA_STATUS ", "ninja: Entering directory ",
-                            "ninja: entering directory ", "ninja: no work to do",
-                            "ninja: nothing to do")):
-            continue
         if line.startswith(relative_root):
             line = line[len(relative_root):]
         lines.append(line)
@@ -58,9 +53,9 @@ def relay(output: str, build: Path) -> str:
 
 
 def captured(command: list[str], build: Path, *, tidy: str | None = None,
-             quiet: bool = False) -> None:
+             quiet: bool = False, timeout: int | None = None) -> None:
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            encoding="utf-8", errors="replace")
+                            encoding="utf-8", errors="replace", timeout=timeout)
     output = result.stdout
     if tidy:
         output = "".join(filter_output(output.splitlines(keepends=True), tidy))
@@ -70,22 +65,7 @@ def captured(command: list[str], build: Path, *, tidy: str | None = None,
         raise subprocess.CalledProcessError(result.returncode, command)
 
 
-def setup(build: Path, meson: list[str]) -> None:
-    if (build / "meson-private" / "coredata.dat").is_file():
-        return
-    if build.parent != ROOT or build.name not in PRESETS:
-        raise RuntimeError(f"build dir '{build}' is not configured; run meson setup first")
-    options = PRESETS[build.name].copy()
-    if os.name == "nt":
-        os.environ.setdefault("CC", tool("gcc"))
-        prefix = ROOT / "build-windows-deps" / "prefix"
-        if prefix.is_dir():
-            options.append("-Dcmake_prefix_path=" + str(prefix))
-    captured([*meson, "setup", str(build), *options], build, quiet=True)
-    print(f"setup OK ({build.name})")
-
-
-def lint(build: Path, meson: list[str]) -> None:
+def lint(build: Path, builder: Build) -> None:
     clang_format = tool("clang-format")
     clang_tidy = tool("clang-tidy")
     run_clang_tidy = tool("run-clang-tidy")
@@ -100,13 +80,10 @@ def lint(build: Path, meson: list[str]) -> None:
             captured([clang_format, "--dry-run", "--Werror", "--ferror-limit=1",
                       *sources[offset:offset + 40]], build)
     captured([sys.executable, "scripts/lint_style.py"], build)
-    setup(build, meson)
-    captured([tool("ninja"), "-C", str(build), "build.ninja"], build, quiet=True)
+    builder.build(tests=True)
     extra = []
     if os.name == "nt":
-        compilers = json.loads(subprocess.check_output(
-            [*meson, "introspect", "--compilers", str(build)], text=True))
-        compiler = compilers["host"]["c"]["exelist"][0]
+        compiler = builder.cc[0]
         target = subprocess.check_output([compiler, "-dumpmachine"], text=True).strip()
         kernel32 = subprocess.check_output(
             [compiler, "-print-file-name=libkernel32.a"], text=True).strip()
@@ -119,30 +96,90 @@ def lint(build: Path, meson: list[str]) -> None:
     print("lint OK")
 
 
+def test_commands(build, binary, registered):
+    commands = {name: [str(path)] for name, path in registered.items()}
+    for path in sorted((ROOT / "tests/scripts").glob("test_*.py")):
+        commands["scripts/" + path.stem[5:]] = [sys.executable, str(path)]
+    scenarios = ["oneshot", "repl_windows"] if WINDOWS else [
+        "oneshot", "repl_interrupt", "repl_smoke"]
+    for name in scenarios:
+        commands["e2e/" + name] = [sys.executable, str(ROOT / "tests/e2e" / ("test_" + name + ".py"))]
+    return commands
+
+
+def run_tests(commands, names, jobs, build):
+    selected = set()
+    for pattern in names or ["*"]:
+        matches = {name for name in commands if fnmatch.fnmatchcase(name, pattern)}
+        if not matches:
+            raise RuntimeError(f"no tests match '{pattern}'")
+        selected.update(matches)
+    def run(name):
+        try:
+            captured(commands[name], build, timeout=60)
+            return True
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            print(f"FAIL: {name}", flush=True)
+            return False
+    with ThreadPoolExecutor(jobs) as pool:
+        results = list(pool.map(run, sorted(selected)))
+    if not all(results):
+        raise RuntimeError(f"{results.count(False)} of {len(results)} tests failed")
+    print(f"test OK ({len(results)} tests)")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("build", "test", "lint", "install"))
-    parser.add_argument("names", nargs="*", help="selected test names")
+    parser.add_argument("action", choices=("build", "test", "lint", "install", "symlink", "clean", "dist"))
+    parser.add_argument("names", nargs="*", help="test names or glob patterns")
     parser.add_argument("--build-dir", default=os.environ.get("BUILD_DIR", "build"))
+    parser.add_argument("--mode", choices=("debug", "release", "asan", "tsan"))
+    parser.add_argument("--static", action="store_true")
+    parser.add_argument("-j", "--jobs", type=int, default=min(os.cpu_count() or 1, 8))
+    parser.add_argument("--prefix", default=os.environ.get("PREFIX", "/usr/local"))
     args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error("jobs must be positive")
     if args.names and args.action != "test":
         parser.error("test names are only valid with test")
     os.chdir(ROOT)
-    os.environ["NINJA_STATUS"] = "HAX_NINJA_STATUS "
     build = Path(args.build_dir).resolve()
     try:
-        meson = [tool("meson")]
-        if args.action == "lint":
-            lint(build, meson)
+        if args.action == "clean":
+            if build == ROOT or ROOT.is_relative_to(build) or not (build / "version.h").is_file():
+                raise RuntimeError("refusing to clean a directory not created by the build runner")
+            shutil.rmtree(build)
             return 0
-        setup(build, meson)
-        captured([tool("ninja"), "-C", str(build)], build)
-        print("build OK" + (f" ({build.name})" if build.name != "build" else ""), flush=True)
+        if args.action == "dist":
+            from dist import distribution
+            distribution(build, args.jobs)
+            return 0
+        builder = Build(build, args.jobs, args.mode or PRESETS.get(build.name, "debug"), args.static)
+        if args.action == "lint":
+            lint(build, builder)
+            return 0
+        binary, registered = builder.build(tests=args.action == "test")
+        print("build OK", flush=True)
         if args.action == "test":
-            captured([*meson, "test", "-C", str(build), "--no-rebuild", "-q",
-                      "--print-errorlogs", *args.names], build)
-        elif args.action == "install":
-            subprocess.run([*meson, "install", "-C", str(build)], check=True)
+            os.environ["HAX_BIN"] = str(binary)
+            os.environ["HAX_WINDOWS_TERMINAL_DRIVER"] = str(build / "windows_terminal_driver.exe")
+            os.environ["TSAN_OPTIONS"] = "atexit_sleep_ms=0:" + os.environ.get("TSAN_OPTIONS", "")
+            run_tests(test_commands(build, binary, registered), args.names, args.jobs, build)
+        elif args.action in ("install", "symlink"):
+            destination = (Path.home() / ".local" if args.action == "symlink" else
+                           Path(os.environ.get("DESTDIR", "")) / args.prefix.lstrip("/"))
+            if args.action == "install" and not os.environ.get("DESTDIR"):
+                destination = Path(args.prefix)
+            destination = destination / "bin" / binary.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if args.action == "symlink":
+                if destination.exists() and not destination.is_symlink():
+                    raise RuntimeError(f"refusing to replace {destination}")
+                destination.unlink(missing_ok=True)
+                destination.symlink_to(binary)
+            else:
+                shutil.copy2(binary, destination)
+            print(destination)
     except (RuntimeError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

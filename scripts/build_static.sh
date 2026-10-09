@@ -105,26 +105,15 @@ if [ -e .git ] && ! git rev-parse --git-dir >/dev/null 2>&1; then
     git config --global --add safe.directory "$(pwd -P)"
 fi
 
-# Arch-suffixed default so emulated foreign-arch builds do not clobber the native one;
-# --wipe because the toolchain can differ between container runs.
 BUILD_DIR=${BUILD_DIR:-build-static-$(uname -m)}
 export BUILD_DIR
-wipe=
-[ -d "$BUILD_DIR" ] && wipe=--wipe
-
-# Alpine ships some static archives as slim LTO bytecode (brotli, libpsl), so every link runs
-# LTO recompilation; -flto=2 caps its workers, which otherwise default to nproc for each of
-# ninja's already-parallel links. Setup output stays on stdout: the release log's record of
-# the artifact's options and dependency versions.
-meson setup $wipe "$BUILD_DIR" --buildtype=release \
-    -Dprefer_static=true -Dc_link_args='-static -flto=2'
 
 # lto-wrapper cannot merge the archives' mismatched -Xassembler options and warns per link;
 # the only consequential drop is --noexecstack, covered by the stack check below, so filter
 # exactly that message. Captured, not piped: a failure must keep its exit status and full log.
 log=$(mktemp)
 trap 'rm -f "$log"' 0
-if ! scripts/check.sh test >"$log" 2>&1; then
+if ! scripts/check.sh test --mode release --static >"$log" 2>&1; then
     cat "$log" >&2
     exit 1
 fi

@@ -61,10 +61,10 @@ jobs:
       - name: Install dependencies
         run: scripts/install_deps.sh ci ${{ matrix.lint && 'lint' || '' }}
       - name: Build and test
-        run: make tests
+        run: python3 scripts/check.py test
       - name: Lint
         if: ${{ matrix.lint }}
-        run: make lint
+        run: python3 scripts/check.py lint
 
   windows:
     name: windows
@@ -87,7 +87,6 @@ jobs:
         shell: pwsh
         run: |
           "C:\msys64\ucrt64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-          python -m pip install meson
       - name: Install dependencies
         run: python scripts/install_deps.py ci
       - name: Build and test
@@ -123,4 +122,4 @@ jobs:
       - name: Install dependencies
         run: scripts/install_deps.sh ci
       - name: Build and test
-        run: make tests
+        run: python3 scripts/check.py test

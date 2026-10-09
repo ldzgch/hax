@@ -9,7 +9,7 @@ Checked over src/ and tests/:
   header — only comments may precede it — so it covers every declaration.
 - Quote includes name files relative to an -iquote root (src/ or tests/),
   never relative to the including file's directory, never through ``..`` or
-  an absolute path. A meson-generated header is named by its ``.in``
+  an absolute path. A build-generated header is named by its ``.in``
   template under a root.
 - Include lines carry no comments except machine-read lint annotations
   (IWYU pragmas, NOLINT); rationale belongs in a comment above the include.
@@ -107,7 +107,7 @@ def check_includes(path: Path, text: str) -> Iterator[Finding]:
                         yield Finding(path, lineno, f'include "{include}" should be "{canonical}"')
                     break
         elif not any(
-            # A .in template stands in for its meson-generated header.
+            # A .in template stands in for its build-generated header.
             (root / include).is_file() or (root / (include + ".in")).is_file()
             for root in ROOTS
         ):

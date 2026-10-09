@@ -17,44 +17,47 @@ import check
 
 class CheckTests(unittest.TestCase):
     def test_relay_preserves_diagnostics(self):
-        output = ("ninja: Entering directory 'build'\nHAX_NINJA_STATUS compiling\n"
-                  "\x1b[31m../src/main.c:2: warning: example\x1b[0m\n"
-                  "ninja: no work to do.\n")
+        output = "\x1b[31m../src/main.c:2: warning: example\x1b[0m\n"
         self.assertEqual(check.relay(output, check.ROOT / "build"),
                          "src/main.c:2: warning: example\n")
         self.assertEqual(check.relay("../../src/main.c:2: error\n",
                                     check.ROOT / "nested" / "build"),
                          "src/main.c:2: error\n")
 
-    def test_setup_uses_coredata_not_directory_existence(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary).resolve()
-            build = root / "build-release"
-            build.mkdir()
-            with patch.object(check, "ROOT", root), patch.object(check, "captured") as run, \
-                    patch.object(check, "tool", return_value="gcc"), redirect_stdout(io.StringIO()):
-                check.setup(build, ["meson"])
-                self.assertIn("--buildtype=release", run.call_args.args[0])
-                (build / "meson-private").mkdir()
-                (build / "meson-private" / "coredata.dat").touch()
-                run.reset_mock()
-                check.setup(build, ["meson"])
-                run.assert_not_called()
+    def test_glob_selection_and_unknown_names(self):
+        commands = {"tools/read": ["read"], "tools/write": ["write"], "buf": ["buf"]}
+        with patch.object(check, "captured") as run, redirect_stdout(io.StringIO()):
+            check.run_tests(commands, ["tools/*", "tools/read"], 1, check.ROOT / "build")
+            self.assertEqual(run.call_count, 2)
+        with self.assertRaisesRegex(RuntimeError, "no tests match"):
+            check.run_tests(commands, ["missing"], 1, check.ROOT / "build")
 
-    def test_unknown_unconfigured_directory(self):
-        with self.assertRaisesRegex(RuntimeError, "meson setup"):
-            check.setup(check.ROOT / "unknown-unconfigured-build", ["meson"])
-
-    @unittest.skipUnless(os.name == "nt", "native Windows dependency prefix")
-    def test_windows_prefix_is_forwarded(self):
+    def test_incremental_inputs_and_command_changes(self):
+        from build import Build
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary).resolve()
-            prefix = root / "build-windows-deps" / "prefix"
-            prefix.mkdir(parents=True)
-            with patch.object(check, "ROOT", root), patch.object(check, "captured") as run, \
-                    patch.object(check, "tool", return_value="gcc"), redirect_stdout(io.StringIO()):
-                check.setup(root / "build", ["meson"])
-                self.assertIn("-Dcmake_prefix_path=" + str(prefix), run.call_args.args[0])
+            root = Path(temporary)
+            output = root / "object.o"
+            source = root / "source.c"
+            source.write_text("source")
+            builder = Build.__new__(Build)
+            self.assertTrue(builder.stale(output, [source], ["cc"]))
+            output.write_text("object")
+            output.with_suffix(".o.cmd").write_text('["cc"]')
+            self.assertFalse(builder.stale(output, [source], ["cc"]))
+            self.assertTrue(builder.stale(output, [source], ["clang"]))
+            source.unlink()
+            self.assertTrue(builder.stale(output, [source], ["cc"]))
+
+    def test_platform_source_selection(self):
+        import build
+        with patch.object(build, "WINDOWS", True):
+            paths = {path.name for path in build.sources("src")}
+            self.assertIn("spawn_win.c", paths)
+            self.assertNotIn("spawn.c", paths)
+        with patch.object(build, "WINDOWS", False):
+            paths = {path.name for path in build.sources("src")}
+            self.assertIn("spawn.c", paths)
+            self.assertNotIn("spawn_win.c", paths)
 
     def test_captured_relays_utf8_and_failure_status(self):
         output = io.StringIO()

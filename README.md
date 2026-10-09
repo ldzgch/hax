@@ -67,26 +67,26 @@ cd hax
 python3 scripts/install_deps.py
 python3 scripts/check.py build
 python3 scripts/check.py test
-python3 scripts/check.py install   # optional; uses Meson's install prefix
+python3 scripts/check.py install   # optional; defaults to /usr/local (--prefix overrides)
 ```
 
 On Unix, the dependency installer uses the system package manager for a C compiler, `libcurl`,
-`jansson`, Meson, Ninja, and `pkg-config`, plus optional `fzf` for `@file` completion. It supports
+`jansson`, Python, and `pkg-config`, plus optional `fzf` for `@file` completion. It supports
 Debian/Ubuntu, Fedora, Arch, openSUSE, Alpine, macOS, FreeBSD, and OpenBSD. Source builds link
 against system libraries. `python3 scripts/install_deps.py tests` also installs `tmux` for the
 interactive tests; `lint` installs LLVM where supported.
 
 On Windows, first install [Git for Windows](https://git-scm.com/download/win) (Git Bash is the shell that the LLM will use), native Python,
-Meson (`python -m pip install meson`), CMake 3.24+, Ninja, and a **MinGW-w64 GCC toolchain with POSIX
+CMake 3.24+ and Ninja (only for bootstrapping third-party dependencies), and a
+**MinGW-w64 GCC toolchain with POSIX
 threads**. Put `gcc`, `cmake`, and `ninja` on `PATH` in the shell you build from; MSVC is not
 supported.
 The dependency installer downloads checksum-verified libcurl/Jansson sources and builds them under
 `build-windows-deps/`; the build runner finds this prefix automatically. Windows builds use static
 libraries and Windows TLS/certificate roots, and tests use a native pseudoconsole instead of tmux.
 
-On Unix, `make`, `make tests`, `make lint`, and `make install` remain shortcuts for the shared
-runner. `make symlink` links the development binary into `~/.local/bin`. For selected tests or
-another build preset on any platform:
+The build runner invokes the compiler and archiver directly and generates `build/compile_commands.json`.
+For selected tests or another build preset:
 
 ```sh
 python3 scripts/check.py test tools/read tools/write

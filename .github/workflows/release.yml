@@ -27,8 +27,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Check tag matches project version
         run: |
-          grep -Fq "version: '${GITHUB_REF_NAME#v}'," meson.build
-      # Built from a git-less snapshot so version.h takes the vcs_tag fallback:
+          grep -Fq "VERSION = \"${GITHUB_REF_NAME#v}\"" scripts/build.py
+      # Built from a git-less snapshot so version.h takes the version fallback:
       # exactly the declared project version, pinned to the tag by the check
       # above. The shallow checkout's `git describe` would be a bare hash.
       - name: Build and test static binary
@@ -73,10 +73,10 @@ jobs:
         shell: pwsh
         run: |
           "C:\msys64\ucrt64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-          python -m pip install meson
       - name: Check tag matches project version
         shell: bash
-        run: "grep -Fq \"version: '${GITHUB_REF_NAME#v}',\" meson.build"
+        run: |
+          grep -Fq "VERSION = \"${GITHUB_REF_NAME#v}\"" scripts/build.py
       - name: Install dependencies
         run: python scripts/install_deps.py ci
       - name: Build Windows executable
@@ -108,22 +108,21 @@ jobs:
           fetch-depth: 0
       - name: Check tag matches project version
         run: |
-          grep -Fq "version: '${GITHUB_REF_NAME#v}'," meson.build
+          grep -Fq "VERSION = \"${GITHUB_REF_NAME#v}\"" scripts/build.py
       - name: Install dependencies
         run: scripts/install_deps.sh ci
-      # `meson dist` archives the sources, then builds and runs the test suite
+      # The dist action archives sources, then builds and runs the test suite
       # against the unpacked tarball — the artifact is validated as shipped.
       - name: Build and test source tarball
         run: |
-          meson setup build
-          meson dist -C build
+          python3 scripts/check.py dist
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
       - name: Collect artifacts and checksums
         run: |
-          cp build/meson-dist/*.tar.xz artifacts/
+          cp build/*.tar.xz artifacts/
           (cd artifacts && sha256sum -- *.tar.* *.zip > SHA256SUMS)
       - name: Extract release notes
         run: scripts/maint/release_notes.py "${GITHUB_REF_NAME#v}" > notes.md

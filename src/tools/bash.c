@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include <jansson.h>
+#include <limits.h>
 #include <stdlib.h>
 
 #include "config.h"

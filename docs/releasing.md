@@ -16,7 +16,7 @@ Versions follow [Semantic Versioning](https://semver.org/): `vMAJOR.MINOR.PATCH`
 To cut a release:
 
 1. Retitle the `## [Unreleased]` section in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD` and
-   set `version:` in `meson.build` to `X.Y.Z`. Start a fresh `## [Unreleased]` section on top.
+   set `VERSION` in `scripts/build.py` to `X.Y.Z`. Start a fresh `## [Unreleased]` section on top.
 2. Commit (e.g. "Release v0.1.0") and push; wait for CI to go green.
 3. Tag and push the tag:
 
@@ -26,7 +26,7 @@ To cut a release:
    ```
 
 The tag push runs the full CI matrix and, in parallel, the release workflow: it verifies the
-tag matches the meson version, builds and tests the static binaries and the dist tarball,
+tag matches the project version, builds and tests the static binaries and the dist tarball,
 publishes the release, and finally points the downstream packages at the published source
 tarball. Prerelease tags (`-rc.N`) are published as GitHub prereleases and skip both package
 bumps, so `releases/latest` and the packages keep tracking the newest stable release.

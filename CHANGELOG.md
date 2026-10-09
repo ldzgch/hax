@@ -7,6 +7,11 @@ notes (see [docs/releasing.md](docs/releasing.md)).
 
 ## [Unreleased]
 
+### Changed
+
+- Replace Meson and Make with a Python build runner supporting incremental builds, parallel
+  tests, lint, installation, development symlinks, and tested source distributions.
+
 ### Fixed
 
 - Preserve bracketed multiline paste in native Windows terminal input, and document Windows
@@ -20,7 +25,7 @@ notes (see [docs/releasing.md](docs/releasing.md)).
 - Native Windows build and test instructions and CI coverage, including REPL pseudoconsole tests.
 - A shared Python build runner for Linux, macOS, BSD, and Windows: `scripts/check.py` provides
   build, test, lint, install, and build-directory presets without requiring a Unix shell or Make.
-  Existing Make and shell entry points remain available.
+  The shell entry point remains available.
 
 - Windows filesystem operations now use extended-length paths for drive and UNC paths, including
   deep project paths, without changing the path spelling passed to Git Bash.
