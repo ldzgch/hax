@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include <windows.h>
+#include <aclapi.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <io.h>
@@ -494,6 +495,21 @@ char *fs_write_with_diff(const char *path, const char *content, size_t content_l
     staged = stage_write(directory, content, content_len, 0, 1);
     if (!staged)
         goto error;
+    /* ReplaceFile preserves the DACL, but not the owner of the destination. */
+    if (existed) {
+        PSID owner = NULL;
+        PSECURITY_DESCRIPTOR descriptor = NULL;
+        DWORD result = GetNamedSecurityInfoW(wide, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+                                             &owner, NULL, NULL, NULL, &descriptor);
+        if (result == ERROR_SUCCESS)
+            result = SetNamedSecurityInfoW(staged, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+                                           owner, NULL, NULL, NULL);
+        LocalFree(descriptor);
+        if (result != ERROR_SUCCESS) {
+            win_error_set_errno(result);
+            goto error;
+        }
+    }
     /* ReplaceFile preserves the destination's ACL and metadata. Private atomic writes instead
      * move their protected temporary file so the replacement receives the new private ACL. */
     if (!(existed ? ReplaceFileW(wide, staged, NULL, 0, NULL, NULL)

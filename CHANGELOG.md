@@ -14,6 +14,8 @@ notes (see [docs/releasing.md](docs/releasing.md)).
 
 ### Fixed
 
+- Preserve destination ownership when replacing existing files on Windows.
+
 - Exclude Windows-only unit tests from Linux and other non-Windows builds.
 
 - Preserve bracketed multiline paste in native Windows terminal input, and document Windows

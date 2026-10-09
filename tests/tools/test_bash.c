@@ -16,6 +16,9 @@
 #include "xalloc.h"
 #include "system/fs.h"
 #include "system/tempfiles.h"
+#ifdef _WIN32
+#include "system/win_bash.h"
+#endif
 #include "terminal/interrupt.h"
 #include "tools/bash_env.h"
 #include "tools/bash_fixtures.h"
@@ -861,7 +864,12 @@ static void test_bash_shell_prefers_bash(void)
 {
     /* Pin the built-in resolution chain so user configuration cannot affect the assertion. */
     t_env_set("HAX_BASH_SHELL", CONFIG_VALUE_DEFAULT);
+#ifdef _WIN32
+    char *bash = win_bash_path();
+    EXPECT(bash != NULL);
+#else
     char *bash = fs_which("bash");
+#endif
     char *out = call_bash("basename $0");
     EXPECT_STR_EQ(out, bash ? "bash\n" : "sh\n");
     free(out);
