@@ -7,6 +7,11 @@ notes (see [docs/releasing.md](docs/releasing.md)).
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve bracketed multiline paste in native Windows terminal input, and document Windows
+  Terminal's Ctrl-V binding requirement for clipboard image capture.
+
 ### Added
 
 - Native Windows x86_64 release archive alongside Linux binaries; binary archives include project

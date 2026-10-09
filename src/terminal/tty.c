@@ -106,9 +106,10 @@ struct tty_mode *tty_raw_enter(int signals)
     mode->input = GetStdHandle(STD_INPUT_HANDLE);
     if (!GetConsoleMode(mode->input, &mode->saved))
         goto error;
-    DWORD raw = (mode->saved | ENABLE_EXTENDED_FLAGS) &
+    /* Preserve terminal-injected VT sequences, including bracketed paste delimiters. */
+    DWORD raw = (mode->saved | ENABLE_EXTENDED_FLAGS | ENABLE_VIRTUAL_TERMINAL_INPUT) &
                 ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_QUICK_EDIT_MODE |
-                  ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT);
+                  ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT);
     if (!signals)
         raw &= ~ENABLE_PROCESSED_INPUT;
     if (!SetConsoleMode(mode->input, raw))

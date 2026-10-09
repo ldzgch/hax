@@ -38,6 +38,22 @@ def test_unicode_editing():
         harness.expect("edit-\u00e9\U0001f600x" not in transcript, "only the edited prompt reaches the model")
 
 
+def test_multiline_bracketed_paste():
+    with WindowsTerminal("text Pasted input received\nend-turn\n") as term:
+        term.expect("try /help")
+        term.mark()
+        term.type("\x1b[200~first line\r\nsecond \u00e9 line\x1b[201~")
+        term.send("Enter")
+        term.wait_for_prompt_after("Pasted input received")
+        term.send("C-d")
+        harness.expect(term.wait_exit() == 0, "multiline paste exits normally")
+        transcript = term.transcript_path.read_text(encoding="utf-8")
+        harness.expect(
+            "first line\nsecond \u00e9 line" in transcript,
+            "paste preserves newlines without submitting separate prompts",
+        )
+
+
 def test_bash_tool_continuation():
     script = (
         'tool bash {"command":"printf native-tool > repl-output.txt; pwd"}\nend-turn\n'

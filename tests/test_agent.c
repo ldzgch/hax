@@ -199,30 +199,25 @@ static void test_apply_settings_quiet_prints_nothing(void)
     fixture_free(&f);
 }
 
-static void test_apply_settings_no_model_fails_intact(void)
+static void test_apply_settings_no_model_preserves_history(void)
 {
     struct fixture f;
     fixture_init(&f);
     agent_session_add_user(&f.session, "hello");
     size_t items_before = f.session.n_items;
-    char *model_before = xstrdup(f.session.model);
 
-    /* Pull the model out from under the next resolve: no env value and no
-     * provider default. reconfigure must fail without touching history or
-     * the currently-applied model, and print no confirmation. (Its "no
-     * model available" diagnostic goes to stderr and shows in the test
-     * log — expected, not a failure.) */
+    /* A provider without a model remains selectable so /model can resolve it later. */
     t_env_unset("HAX_MODEL");
     f.provider.default_model = NULL;
 
     char *out = capture_stdout(do_apply, &f);
     EXPECT(f.session.n_items == items_before);
-    EXPECT_STR_EQ(f.session.model, model_before);
-    EXPECT(strstr(out, "switched to") == NULL);
+    EXPECT(f.session.model == NULL);
+    EXPECT(f.session.model_label == NULL);
+    EXPECT(strstr(out, "switched to prov-x · no model — use /model") != NULL);
     EXPECT(strstr(out, "ctrl-d quit") == NULL);
 
     free(out);
-    free(model_before);
     fixture_free(&f);
 }
 
@@ -837,7 +832,7 @@ int main(void)
     test_apply_settings_nonempty_prints_marker();
     test_apply_settings_switch_line_skips_banner();
     test_apply_settings_quiet_prints_nothing();
-    test_apply_settings_no_model_fails_intact();
+    test_apply_settings_no_model_preserves_history();
     test_apply_settings_switches_without_model();
     test_apply_settings_refreshes_on_model_or_provider_change();
     test_resync_effort_follows_late_metadata();

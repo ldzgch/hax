@@ -180,8 +180,9 @@ tracked and untracked-but-not-ignored files. `@../`, `@~/`, and absolute prefixe
 named directory. Selecting a file inserts its path; the model reads it only if needed.
 
 Ctrl-V copies a clipboard image to a temporary file and inserts its path. On Linux and the BSDs
-this requires `wl-paste` (Wayland) or `xclip` (X11); macOS works without an extra utility. If no
-image is present, Ctrl-V pastes text. Image understanding also depends on the selected
+this requires `wl-paste` (Wayland) or `xclip` (X11); macOS and native Windows work without an
+extra utility. If no image is present,
+Ctrl-V pastes text. Image understanding also depends on the selected
 model/provider; hax detects support when metadata is available, and `image_input` can override
 detection.
 
